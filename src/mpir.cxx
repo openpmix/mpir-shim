@@ -88,11 +88,15 @@
 #include <time.h>
 #include <pthread.h>
 #include <stdarg.h>
+#include <errno.h>
+#include <sys/stat.h>
+#include <sys/types.h>
 
 #include <pmix_tool.h>
 
 #include <string>
 #include <set>
+#include <vector>
 
 /*  */
 /**********************************************************************/
@@ -252,6 +256,73 @@ int MPIR_ignore_queues;
 
 /*  */
 /**********************************************************************/
+/* Scoped pointer implementation, very similar to the Boost version.
+ * Use this templated class to easily delete a pointer when a stack
+ * variable goes out of scope.
+ * 
+ * Example:
+ *   {
+ *     tv::scoped_ptr<test> t(new test(counter));   // Create a scoped_ptr
+ *     printf("Counter:  %u\n", t->count());        // Deref as a normal ptr
+ *     printf("Counter:  %u\n", (*t).count());
+ *     printf("Counter:  %u\n", t.get()->count());  // Get at the actual ptr
+ *     t.reset(new test(counter));                  // Delete the original
+ *                                                  // ptr and replace with
+ *                                                  // a new one.
+ *   } // ptr is automatically deleted when t goes out of scope
+ */
+
+template <typename T> class scoped_ptr
+{
+ public:
+  /* Constructor takes ownership of the object. */
+  explicit scoped_ptr (T *p_ = 0) : p(p_) {}
+
+  /* Destructor will delete the object. */
+  ~scoped_ptr()
+    {
+      if (p)
+	{
+	  delete p;
+	  p = 0;
+	}  /* if */
+    }  /* ~scoped_ptr */
+
+  /* Reset the pointer, deleting any old object. */
+  void reset (T *p_ = 0)
+    {
+      if (p != p_)
+	{
+	  delete p;
+	  p = p_;
+	}  /* if */
+    }  /* reset */
+
+  /* Forget about the old object without deleting it. */
+  T *release()
+    {
+      T *t = p;
+      p = 0;
+      return t;
+    }  /* release */
+
+  T &operator*() const			{ return *p; }
+  T *operator->() const			{ return p; }
+  T &operator[](int idx)		{ return p[idx]; }
+  const T& operator[](int idx) const	{ return p[idx]; }
+  operator bool () const		{ return p; }
+  T *get() const			{ return p; }
+
+ private:
+  /* Prevent copying */
+  scoped_ptr(const scoped_ptr &);
+  scoped_ptr &operator =(const scoped_ptr &);
+        
+  T *p;
+};  /* scoped_ptr */
+
+/*  */
+/**********************************************************************/
 /* PMIx namespace */
 /**********************************************************************/
 /*
@@ -271,6 +342,24 @@ namespace pmix
   {
     app_t() { PMIX_APP_CONSTRUCT (this); }
     ~app_t() { PMIX_APP_DESTRUCT (this); }
+    status_t argv_append (const char *arg_)
+      {
+	status_t rc;
+	PMIX_ARGV_APPEND (rc, argv, arg_);
+	return rc;
+      }	 /* argv_append */
+    status_t env_append (const char *env_)
+      {
+	status_t rc;
+	PMIX_ARGV_APPEND (rc, env, env_);
+	return rc;
+      }	 /* env_append */
+    status_t env_setenv (const char *name_, const char *value_)
+      {
+	status_t rc;
+	PMIX_SETENV (rc, name_, value_, &env);
+	return rc;
+      }	 /* env_setenv */
   };  /* app_t */
 
   struct info_t : pmix_info_t
@@ -280,10 +369,12 @@ namespace pmix
     info_t(const char *k_, const void *d_) { load (k_, d_); }
     info_t(const char *k_, const char *d_) { load (k_, d_); }
     info_t(const char *k_, const bool d_)  { load (k_, d_); }
+    info_t(const char *k_, const uint32_t d_)  { load (k_, d_); }
     void load(const char *k_, const void *d_, const data_type_t t_) { PMIX_INFO_LOAD (this, k_, d_, t_); }
     void load(const char *k_, const void *d_) { load (k_, d_, PMIX_POINTER); }
     void load(const char *k_, const char *d_) { load (k_, d_, PMIX_STRING); }
     void load(const char *k_, const bool d_)  { load (k_, &d_, PMIX_BOOL); }
+    void load(const char *k_, const uint32_t d_)  { load (k_, &d_, PMIX_UINT32); }
     ~info_t() { PMIX_INFO_DESTRUCT (this); }
   };  /* info_t */
 
@@ -449,8 +540,11 @@ struct register_event_handler_t
 						     info_, ninfo_,
 						     event_hdlr_,
 						     cbfunc_, &lock);
-    lock.wait_thread();
-    lock_status = lock.status;
+    if (PMIX_SUCCESS == rv)
+      {
+	lock.wait_thread();
+	lock_status = lock.status;
+      }	 /* if */
     return rv;
   }  /* register_event_handler */
 
@@ -474,6 +568,8 @@ struct register_event_handler_t
 static const char whoami[] = "mpir";	/* The name we go by */
 static pmix::proc_t myproc;		/* Our (mpir's) PMIx process structure */
 static bool debug_output = false;	/* Generate debug output? */
+static std::string session_dirname;
+static std::string rendezvous_filename;
 
 /* Note that we share the executable and hostname strings across
  * MPIR_proctable entries.  MPIR says:
@@ -573,6 +669,44 @@ debug_printf (const char *format_ ...)
 }  /* debug_printf */
 
 /**********************************************************************/
+/* Format a string into an allocated buffer and return the result.
+   The caller should delete the string. */
+
+#if (__GNUC__)
+static std::string
+form_string (const char *format_ ...) __attribute__ ((format (printf, 1, 2)));
+#endif
+
+static pthread_mutex_t form_string_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+static std::string
+form_string (const char *format_ ...)
+{
+  pthread_mutex_lock (&form_string_mutex);
+  static int sz = 128;		/* Initial size, grows to fit longest seen */
+  static char *buf = (char *) malloc (sz);
+  va_list arg_list;
+  va_start (arg_list, format_);
+  int len = vsnprintf (buf, sz, format_, arg_list);
+  va_end (arg_list);
+  if (len < 0)
+    fatal_error ("form_string: vnsprintf returned a negative value");
+  if (len >= sz)
+    {
+      sz = len + 1;
+      buf = (char *) realloc (buf, sz);
+      va_list arg_list;
+      va_start (arg_list, format_);
+      int len2 = vsnprintf (buf, sz, format_, arg_list);
+      va_end (arg_list);
+      if (len < len2)
+	fatal_error ("form_string: second vnsprintf returned a longer result");
+    }  /* else */
+  pthread_mutex_unlock (&form_string_mutex);
+  return buf;
+}  /* form_string */
+
+/**********************************************************************/
 /* Function entry/exit object. */
 
 struct entry_exit_t
@@ -600,14 +734,58 @@ static void
 usage()
 {
   fprintf (stderr,
-	   "PMIx to MPIR wrapper program.\n\n"
-	   "Usage: %s [OPTION] {prun|mpirun|mpiexec|prrterun} [ARGS] PROG [PROG-ARGS]\n\n"
-	   "-h | --help    This message.\n"
-	   "-d | --debug   Enable debug messages.\n\n"
+	   "PMIx to MPIR shim program.\n"
+	   "\n"
+	   "Usage: %s [OPTION] [LAUNCHER] [ARGS] PROG [PROG-ARGS]\n"
+	   "\n"
+	   "OPTIONS:\n"
+	   "  -h | --help                   This message.\n"
+	   "  -d | --debug                  Enable debug messages.\n"
+	   "  -p | --force-proxy-run        Force a proxy run.\n"
+	   "  -n | --force-non-proxy-run    Force a non-proxy run.\n"
+	   "\n"
+	   "LAUNCHER:\n"
+	   "  Name of a PMIx launcher, such as \"prun\" or \"mpirun\".\n"
+	   "\n"
+	   "ARGS:\n"
+	   "  Arguments to pass to LAUNCHER, such as \"-n 3\".\n"
+	   "\n"
+	   "PROG:\n"
+	   "  Application program for LAUNCHER to launch.\n"
+	   "\n"
+	   "PROG-ARGS:\n"
+	   "  Arguments to pass to PROG.\n"
+	   "\n"
+	   "A \"proxy run\" assumes that there is no persistent PMIx DVM running and\n"
+	   "LAUNCHER will start a temporary DVM.  By default, if LAUNCHER is named\n"
+	   "\"prun\" then a non-proxy run is done, otherwise a proxy run is done.\n"
+	   "\n"
 	   "Report bugs to /dev/null\n",
 	   whoami);
   exit (1);
 }  /* usage */
+
+/**********************************************************************/
+/* Macros to define pmix::info_t vectors, and append to them.  The
+ * vector starts out with space reserved for 10 elements, but grows if
+ * more than 10 elements are appended. */
+
+#define DEFINE_VEC(T,V) std::vector<T> V; V.reserve(10)
+
+#define DEFINE_INFO() DEFINE_VEC(pmix::info_t,info)
+
+#define DEFINE_DINFO() DEFINE_VEC(pmix::info_t,dinfo)
+
+inline std::vector<pmix::info_t>::reference
+info_next (std::vector<pmix::info_t> &vec_)
+{
+  vec_.push_back (pmix::info_t());
+  return vec_.back();
+}  /* info_next */
+
+#define INFO_NEXT info_next(info)
+
+#define DINFO_NEXT info_next(dinfo)
 
 /**********************************************************************/
 /* Callback and event handler functions */
@@ -685,7 +863,14 @@ default_notification_fn (size_t evhdlr_registration_id_,
 {
   NOTE_ENTRY_EXIT();
 
-  /* We don't do anything with default events.  Should we? */
+  debug_printf ("Status '%s', Source nspace '%s', Source rank '%ld'\n",
+		PMIx_Error_string (status_),
+		source_ ? source_->nspace : "null",
+		source_ ? source_->rank : -1L);
+
+  /*
+   * We don't do anything with default events.  Should we?
+   */
   if (NULL != cbfunc_)
     cbfunc_ (PMIX_SUCCESS, NULL, 0, NULL, NULL, cbdata_);
 }  /* default_notification_fn */
@@ -823,7 +1008,7 @@ debugger_release_fn (size_t evhdlr_registration_id_,
 {
   NOTE_ENTRY_EXIT();
 
-  const char *appspace = 0;
+  const char *app_nspace = 0;
   release_t *release = NULL;
 
   /*
@@ -833,9 +1018,9 @@ debugger_release_fn (size_t evhdlr_registration_id_,
     {
       if (PMIX_CHECK_KEY (&info_[n], PMIX_NSPACE))
 	{
-	  appspace = info_[n].value.data.string;
+	  app_nspace = info_[n].value.data.string;
 	  debug_printf ("PMIX_NSPACE key found: namespace '%s'\n",
-			appspace);
+			app_nspace);
 	}  /* if */
       else if (PMIX_CHECK_KEY (&info_[n], PMIX_EVENT_RETURN_OBJECT))
 	{
@@ -856,7 +1041,7 @@ debugger_release_fn (size_t evhdlr_registration_id_,
    * If the namespace of the launched job wasn't returned, then that
    * is an error.
    */
-  if (NULL == appspace)
+  if (NULL == app_nspace)
     pmix_fatal_error (PMIX_SUCCESS,
 		      "Launched application namespace wasn't returned in callback");
 
@@ -864,8 +1049,8 @@ debugger_release_fn (size_t evhdlr_registration_id_,
    * Copy the namespace of the application into the release object.
    */
   debug_printf ("Application namespace is '%s'\n",
-		appspace);
-  release->nspace = strdup (appspace);
+		app_nspace);
+  release->nspace = strdup (app_nspace);
 
   /*
    * Tell the event handler state machine that we are the last step
@@ -886,7 +1071,7 @@ debugger_release_fn (size_t evhdlr_registration_id_,
  */
 
 static void
-pmix_proc_table_to_mpir (const char *appspace_)
+pmix_proc_table_to_mpir (const char *app_nspace_)
 {
   NOTE_ENTRY_EXIT();
 
@@ -897,7 +1082,7 @@ pmix_proc_table_to_mpir (const char *appspace_)
    */
   pmix::query_t query;
   PMIX_ARGV_APPEND (rc, query.keys, PMIX_QUERY_PROC_TABLE);
-  query.qualifiers = new pmix::info_t (PMIX_NSPACE, appspace_);
+  query.qualifiers = new pmix::info_t (PMIX_NSPACE, app_nspace_);
   query.nqual = 1;
   query_data_t query_data;
   rc = PMIx_Query_info_nb (&query, 1, query_callback_fn, (void *) &query_data);
@@ -992,6 +1177,410 @@ pmix_proc_table_to_mpir (const char *appspace_)
 }  /* pmix_proc_table_to_mpir */
 
 /**********************************************************************/
+/* Setup the session temp directory name and rendezvous filename. */
+
+static void
+setup_session_paths()
+{
+  const char *tmpdir = getenv("TMPDIR");
+  if (!tmpdir || access (tmpdir, F_OK) != 0)
+    tmpdir = "/tmp";
+
+  session_dirname = form_string ("%s/%s.session.%d.%d",
+				 tmpdir,
+				 whoami,
+				 int(geteuid()),
+				 int(getpid()));
+  rendezvous_filename = form_string ("%s/%s.rndz.%d",
+				     session_dirname.c_str(),
+				     whoami,
+				     int(getpid()));
+
+  int rc = mkdir (session_dirname.c_str(), S_IRWXU);
+  if (0 != rc)
+    fatal_error ("mkdir() failed: errno = %d", errno);
+}  /* setup_session_paths */
+
+/**********************************************************************/
+/* Initialize ourselves as a PMIx tool. */
+
+static void
+initialize_as_tool (bool proxy_run_)
+{
+  NOTE_ENTRY_EXIT();
+
+  debug_printf ("Initializing as a PMIx tool %s\n",
+		(proxy_run_
+		 ? "for a proxy run"
+		 : "for a non-proxy run"));
+
+  std::string nspace;
+  DEFINE_INFO();
+  if (!proxy_run_)
+    {
+				/* Use the system connection first, if available. */
+//      INFO_NEXT.load (PMIX_CONNECT_SYSTEM_FIRST, true);
+    }  /* if */
+  else
+    {
+				/* Do not connect to a PMIx server yet */
+      INFO_NEXT.load (PMIX_TOOL_DO_NOT_CONNECT, true);
+				/* We assign the unique namespace in this case */
+      nspace = form_string ("%s.%d", whoami, getpid());
+      INFO_NEXT.load (PMIX_TOOL_NSPACE, nspace.c_str());
+				/* We're always rank 0 */
+      INFO_NEXT.load (PMIX_TOOL_RANK, uint32_t(0));
+    }  /* else */
+
+				 /* PMIx_tool_init() starts a thread running PMIx progress_engine() */
+  pmix::status_t rc = PMIx_tool_init (&myproc, &info.front(), info.size());
+  if (PMIX_SUCCESS != rc)
+    pmix_fatal_error (rc, "PMIx_tool_init() failed");
+
+				/* If the launcher is going to start a PMIx server... */
+  if (proxy_run_)
+    {
+				/* Fill in our nspace/rank to use later */
+      strcpy (myproc.nspace, nspace.c_str());
+      myproc.rank = 0;
+				/* Setup the session paths */
+      setup_session_paths();
+    }	/* if */
+
+  debug_printf ("Running as a PMIx tool\n");
+}  /* initialize_as_tool */
+
+/**********************************************************************/
+/* Register default event handler */
+
+static void
+register_default_event_handler()
+{
+  NOTE_ENTRY_EXIT();
+
+  debug_printf ("Registering default event handler\n");
+
+  register_event_handler_t event_registrar;
+  pmix::status_t rc =
+    event_registrar.register_event_handler (default_notification_fn,
+					    evhandler_reg_callbk);
+  if (PMIX_SUCCESS != rc)
+    pmix_fatal_error (rc, "Registering default event handler");
+}  /* register_default_event_handler */
+
+/**********************************************************************/
+/* Register to receive the "launcher-ready" event telling us that the
+ * launcher is ready for us to connect to it.  The "launcher" here is
+ * prun, mpirun, mpiexec, etc. */
+
+static void
+register_launcher_ready (release_t *launcher_ready_)
+{
+  NOTE_ENTRY_EXIT();
+
+  debug_printf ("Registering \"launcher-ready\" event handler\n");
+
+  pmix::status_t code = PMIX_LAUNCHER_READY;
+  DEFINE_INFO();
+  INFO_NEXT.load (PMIX_EVENT_RETURN_OBJECT, (void *) launcher_ready_);
+  INFO_NEXT.load (PMIX_EVENT_HDLR_NAME, "LAUNCHER-READY");
+
+  register_event_handler_t event_registrar;
+  pmix::status_t rc =
+    event_registrar.register_event_handler (&code, 1,
+					    &info.front(), info.size(),
+					    launcher_release_fn,
+					    evhandler_reg_callbk);
+  if (PMIX_SUCCESS != rc)
+    pmix_fatal_error (rc,
+		      "Registering \"launcher-ready\" event handler");
+  if (PMIX_SUCCESS != event_registrar.lock_status)
+    pmix_fatal_error (event_registrar.lock_status,
+		      "Registering \"launcher-ready\" event handler: lock status");
+}  /* register_launcher_ready */
+
+/**********************************************************************/
+/* Register to receive the "launch-complete" event, which will telling
+ * us the namespace of the job being debugged, so that we can fill in
+ * the MPIR_proctable[]. */
+
+static void
+register_launcher_complete (release_t *launcher_complete_)
+{
+  NOTE_ENTRY_EXIT();
+
+  debug_printf ("Registering \"launcher-complete\" event handler\n");
+
+  pmix::status_t code = PMIX_LAUNCH_COMPLETE;
+  DEFINE_INFO();
+  INFO_NEXT.load (PMIX_EVENT_RETURN_OBJECT, (void *) launcher_complete_);
+  INFO_NEXT.load (PMIX_EVENT_HDLR_NAME, "LAUNCHER-COMPLETE");
+
+  register_event_handler_t event_registrar;
+  pmix::status_t rc =
+    event_registrar.register_event_handler (&code, 1,
+					    &info.front(), info.size(),
+					    debugger_release_fn,
+					    evhandler_reg_callbk);
+  if (PMIX_SUCCESS != rc)
+    pmix_fatal_error (rc,
+		      "Registering \"launch-complete\" event handler");
+  if (PMIX_SUCCESS != event_registrar.lock_status)
+    pmix_fatal_error (event_registrar.lock_status,
+		      "Registering \"launch-complete\" event handler: lock status");
+}  /* register_launcher_complete */
+
+/**********************************************************************/
+/* Register callback for when the launcher terminates. */
+
+static void
+register_launcher_terminate (release_t *launcher_terminate_,
+			     const char *launcher_nspace_)
+{
+  NOTE_ENTRY_EXIT();
+
+  debug_printf ("Registering \"launcher-terminate\" event handler\n");
+
+  pmix::status_t code = PMIX_ERR_JOB_TERMINATED;
+  launcher_terminate_->nspace = strdup (launcher_nspace_);
+  DEFINE_INFO();
+  INFO_NEXT.load (PMIX_EVENT_RETURN_OBJECT, launcher_terminate_);
+				/* Only call me back when this specific job terminates */
+  pmix::proc_t proc (launcher_nspace_, PMIX_RANK_WILDCARD);
+  INFO_NEXT.load (PMIX_EVENT_AFFECTED_PROC, &proc, PMIX_PROC);
+
+  register_event_handler_t event_registrar;
+  pmix::status_t rc =
+    event_registrar.register_event_handler (&code, 1,
+					    &info.front(), info.size(),
+					    launcher_release_fn,
+					    evhandler_reg_callbk);
+  if (PMIX_SUCCESS != rc)
+    pmix_fatal_error (rc,
+		      "Registering \"launch-terminate\" event handler");
+  if (PMIX_SUCCESS != event_registrar.lock_status)
+    pmix_fatal_error (event_registrar.lock_status,
+		      "Registering \"launch-terminate\" event handler: lock status");
+}  /* register_launcher_terminate */
+
+/**********************************************************************/
+/* Spawn an intermediate launcher (prun) using PMIx_Spawn().  Tell the
+ * launcher to wait for directives prior to spawning the
+ * application. */
+
+static void
+spawn_launcher (char *launcher_nspace_,
+		int argc_,
+		char **argv_,
+		bool proxy_run_)
+{
+  NOTE_ENTRY_EXIT();
+
+  /*
+   * Setup the launcher's application parameters.
+   */
+  pmix::app_t app;
+  pmix::envar_t envar;
+				/* The executable name */
+  app.cmd = strdup (argv_[0]);
+				/* The argv to pass to the application */
+  for (int n = 0; n < argc_; n++)
+    {
+      const pmix::status_t rc = app.argv_append (argv_[n]);
+      if (PMIX_SUCCESS != rc)
+	pmix_fatal_error (rc, "PMIX_ARG_APPEND() failed");
+    }  /* for */
+				/* Copy the environment */
+  for (char **envp = environ; *envp; envp++)
+    {
+      app.env_append (*envp);
+    }  /* for */
+				/* Try to use the same working directory */
+  char cwd[PATH_MAX];
+  getcwd (cwd, PATH_MAX);
+  app.cwd = strdup(cwd);
+				/* Just one launcher process please */
+  app.maxprocs = 1;
+  /*
+   * Provide job-level directives so the apps do what the user requested
+   */
+  DEFINE_INFO();
+				/* Map by slot */
+  INFO_NEXT.load (PMIX_MAPBY, "slot");
+#if 0  /* 0 MARKER */
+  if (proxy_run_)
+    {
+				/* Have it use this session directory */
+      envar.load ("PMIX_SERVER_TMPDIR", session_dirname.c_str(), ':');
+      INFO_NEXT.load (PMIX_SET_ENVAR, &envar, PMIX_ENVAR);
+				/* Have it output a specific rendezvous file */
+      envar.load ("PMIX_LAUNCHER_RENDEZVOUS_FILE", rendezvous_filename.c_str(), ':');
+      INFO_NEXT.load (PMIX_SET_ENVAR, &envar, PMIX_ENVAR);
+    }  /* if */
+				/* Tell the launcher to wait for directives */
+  envar.load ("PMIX_LAUNCHER_PAUSE_FOR_TOOL", form_string ("%s:%d", myproc.nspace, myproc.rank).c_str(), ':');
+  INFO_NEXT.load (PMIX_SET_ENVAR, &envar, PMIX_ENVAR);
+#else
+  if (proxy_run_)
+    {
+      app.env_setenv ("PMIX_SERVER_TMPDIR", session_dirname.c_str());
+      app.env_setenv ("PMIX_LAUNCHER_RENDEZVOUS_FILE", rendezvous_filename.c_str());
+      app.env_setenv ("PMIX_LAUNCHER_PAUSE_FOR_TOOL", form_string ("%s:%d", myproc.nspace, myproc.rank).c_str());
+    }  /* if */
+#endif /* 0 MARKER */
+				/* stdout/stderr forwarding */
+  INFO_NEXT.load (PMIX_FWD_STDOUT, true);
+  INFO_NEXT.load (PMIX_FWD_STDERR, true);
+				/* Notify us when the job completes */
+  INFO_NEXT.load (PMIX_NOTIFY_COMPLETION, true);
+				/* We are spawning a tool */
+  INFO_NEXT.load (PMIX_SPAWN_TOOL, true);
+#if 0
+				/* Have it use this session directory */
+  INFO_NEXT.load (PMIX_SERVER_TMPDIR, session_dirname.c_str());
+				/* Have it output a specific rendezvous file */
+  INFO_NEXT.load (PMIX_LAUNCHER_RENDEZVOUS_FILE, rendezvous_filename.c_str());
+#endif
+
+  /*
+   * Spawn the job - the function will return when the launcher has
+   * been launched.  Note that this doesn't tell us anything about
+   * the launcher's state - it just means that the launcher has been
+   * fork/exec'd.
+   */
+  debug_printf ("Spawning launcher '%s'\n", app.cmd);
+  pmix::status_t rc = PMIx_Spawn (&info.front(), info.size(), &app, 1, launcher_nspace_);
+  if (PMIX_SUCCESS != rc)
+    pmix_fatal_error (rc, "PMIx_Spawn() failed");
+  debug_printf ("Launcher's namespace is '%s'\n", launcher_nspace_);
+}  /* spawn_launcher */
+
+/**********************************************************************/
+/* Spawn an intermediate launcher (mpirun) using fork()/exec().  Tell
+ * the launcher to wait for directives prior to spawning the
+ * application. */
+
+static void
+fork_exec_launcher (char *launcher_nspace_,
+		    int argc_,
+		    char **argv_)
+{
+  NOTE_ENTRY_EXIT();
+
+  debug_printf ("fork/exec launcher '%s'\n", argv_[0]);
+
+  pid_t pid = fork();
+  if (pid == -1)
+    fatal_error ("fork() failed: errno = %d", errno);
+  else if (pid == 0)
+    {
+				/* Child process */
+      const std::string pause_str (form_string ("%s:%d", myproc.nspace, myproc.rank).c_str());
+      if (-1 == setenv ("PMIX_SERVER_TMPDIR", session_dirname.c_str(), true) ||
+	  -1 == setenv ("PMIX_LAUNCHER_RENDEZVOUS_FILE", rendezvous_filename.c_str(), true) ||
+	  -1 == setenv ("PMIX_LAUNCHER_PAUSE_FOR_TOOL", pause_str.c_str(), true))
+	{
+	  fatal_error ("setenv() failed: errno = %d", errno);
+	}  /* if */
+				/* exec() the launcher */
+      execvp (argv_[0], argv_);
+      fatal_error ("execvp() failed: errno = %d", errno);
+    }  /* else-if */
+
+  /*
+   * Attributes for connecting to the server.
+   */
+  DEFINE_INFO();
+				/* Rendezvous file passed in PMIX_LAUNCHER_RENDEZVOUS_FILE */
+  INFO_NEXT.load (PMIX_TOOL_ATTACHMENT_FILE, rendezvous_filename.c_str());
+				/* Number of times to try to connect */
+  INFO_NEXT.load (PMIX_CONNECT_MAX_RETRIES, uint32_t(100));
+				/* Number of seconds to wait between connect attempts */
+  INFO_NEXT.load (PMIX_CONNECT_RETRY_DELAY, uint32_t(0));
+
+  debug_printf ("Connecting tool to server '%s'\n", argv_[0]);
+  pmix::status_t rc = PMIx_tool_connect_to_server (&myproc, &info.front(), info.size());
+  if (PMIX_SUCCESS != rc)
+    pmix_fatal_error (rc, "PMIx_tool_connect_to_server() failed");
+  debug_printf ("Connected tool to server\n");
+}  /* fork_exec_launcher */
+
+/**********************************************************************/
+/* Send the launch directives. */
+
+static void
+send_launch_directives (const char *launcher_nspace_)
+{
+  NOTE_ENTRY_EXIT();
+
+				/* Provide a few job-level directives */
+  pmix_data_array_t darray;
+				/* Setup the infos for the data array */
+  DEFINE_DINFO();
+#if 0
+    // A couple of examples of how to set environment variables.
+				/* Set FOOBAR=1 */
+  pmix::envar_t envar_foobar ("FOOBAR", "1", ':');
+  DINFO_NEXT.load (PMIX_SET_ENVAR, &envar_foobar, PMIX_ENVAR);
+				/* Set PATH=/home/common/local/toad:$PATH */
+  pmix::envar_t envar_path ("PATH", "/home/common/local/toad", ':');
+  DINFO_NEXT.load (PMIX_PREPEND_ENVAR, &envar_path, PMIX_ENVAR);
+#endif
+				/* Stop the processes in PMIx_Init() */
+  DINFO_NEXT.load (PMIX_DEBUG_STOP_IN_INIT, true);
+				/* Notify us when the job is launched */
+  DINFO_NEXT.load (PMIX_NOTIFY_LAUNCH, true);
+
+				/* Fill in the data array fields */
+  darray.type = PMIX_INFO;
+  darray.size = dinfo.size();
+  darray.array = &dinfo.front();
+
+  DEFINE_INFO();
+				/* The launcher's namespace, rank 0 */
+  pmix::proc_t proc (launcher_nspace_, 0);
+				/* Deliver to the target launcher */
+  INFO_NEXT.load (PMIX_EVENT_CUSTOM_RANGE, &proc, PMIX_PROC);
+				/* Only non-default handlers */
+  INFO_NEXT.load (PMIX_EVENT_NON_DEFAULT, true);
+				/* Load the data array */
+  INFO_NEXT.load (PMIX_DEBUG_JOB_DIRECTIVES, &darray, PMIX_DATA_ARRAY);
+
+  debug_printf ("Sending launch directives\n");
+  pmix::status_t rc = 
+    PMIx_Notify_event (PMIX_LAUNCH_DIRECTIVE,
+		       NULL, PMIX_RANGE_CUSTOM,
+		       &info.front(), info.size(),
+		       NULL, NULL);
+  if (PMIX_SUCCESS != rc)
+    pmix_fatal_error (rc, "PMIx_Notify_event() failed sending PMIX_LAUNCH_DIRECTIVE");
+}   /* send_launch_directives */
+
+/**********************************************************************/
+/* Release the launcher process and allow it to run. */
+
+static void
+release_launcher_process (const char *app_nspace_)
+{
+  NOTE_ENTRY_EXIT();
+
+  pmix::proc_t proc (app_nspace_, PMIX_RANK_WILDCARD);
+  DEFINE_INFO();
+				/* Deliver to the target nspace */
+  INFO_NEXT.load (PMIX_EVENT_CUSTOM_RANGE, &proc, PMIX_PROC);
+  INFO_NEXT.load (PMIX_EVENT_NON_DEFAULT, true);
+
+  debug_printf ("Sending debugger release\n");
+  pmix::status_t rc = 
+    PMIx_Notify_event (PMIX_ERR_DEBUGGER_RELEASE,
+		       NULL, PMIX_RANGE_CUSTOM,
+		       &info.front(), info.size(),
+		       NULL, NULL);
+  if (PMIX_SUCCESS != rc)
+    pmix_fatal_error (rc, "PMIx_Notify_event() failed sending PMIX_ERR_DEBUGGER_RELEASE");
+}  /* release_launcher_process */
+
+/**********************************************************************/
 /* The main() program. */
 
 int main (int argc, char **argv)
@@ -1000,6 +1589,11 @@ int main (int argc, char **argv)
    * Process any arguments we were given.
    */
   int argi = 1;			/* Index of starter program name  */
+  enum {
+    pr_unspecified,
+    pr_force_false,
+    pr_force_true
+  } proxy_run_pref = pr_unspecified;
   for (int i = 1; i < argc; i++)
     {
       if (argv[i][0] != '-')
@@ -1009,6 +1603,10 @@ int main (int argc, char **argv)
 	usage();		/* Print the usage message and exit */
       else if (!strcmp (argv[i], "-d") || !strcmp (argv[i], "--debug"))
 	debug_output = true;
+      else if (!strcmp (argv[i], "-p") || !strcmp (argv[i], "--force-proxy-run"))
+	proxy_run_pref = pr_force_true;
+      else if (!strcmp (argv[i], "-n") || !strcmp (argv[i], "--force-no-proxy-run"))
+	proxy_run_pref = pr_force_false;
     }  /* for */
   if (argi >= argc)		/* No program arguments? */
     usage();			/* Print the usage message and exit. */
@@ -1016,188 +1614,63 @@ int main (int argc, char **argv)
   NOTE_ENTRY_EXIT();
 
   /*
-   * Check to see if we are using an intermediate launcher that we
-   * recognize.  This is a crock... Is it necessary?
+   * A proxy run is one in which the launcher program starts the DVM.
+   * An example of this is OMPI v5's "mpirun".
    */
-  debug_printf ("Checking if '%s' is a recognized launcher\n", argv[argi]);
-  {  /* let */
-    static const char *launchers[] =
-      {
-	"prun",
-	"mpirun",
-	"mpiexec",
-	"prrterun",
-	NULL
-      };
-    bool found = false;
-    for (int n = 0; NULL != launchers[n]; n++)
-      {
-	if (!strcmp (argv[argi], launchers[n]))
-	  {
-	    found = true;
-	    break;
-	  }   /* if */
-      }  /* for */
-    if (!found)
-      usage();			/* A recognized launcher was not found */
-  }  /* let */
+  const char *launcher_name = argv[argi];
+  const char *launcher_base = strrchr (launcher_name, '/');
+  launcher_base = (launcher_base
+		   ? launcher_base + 1
+		   : launcher_name);
+  const bool proxy_run = (proxy_run_pref == pr_unspecified
+			  ? strcmp (launcher_base, "prun") != 0
+			  : proxy_run_pref == pr_force_false
+			  ? false
+			  : true);
+
+  debug_printf ("Launcher '%s', performing a %s\n",
+		launcher_base,
+		proxy_run ? "proxy run" : "NON-proxy run ");
 
   /*
    * Initialize ourselves as a PMIx tool.
    */
-  debug_printf ("Initializing as a PMIx tool\n");
-  {  /* let */
-				/* Use the system connection first, if available. */
-    pmix::info_t info (PMIX_CONNECT_SYSTEM_FIRST, true);
-				/* PMIx_tool_init() starts a thread running PMIx progress_engine() */
-    pmix::status_t rc = PMIx_tool_init (&myproc, &info, 1);
-    if (PMIX_SUCCESS != rc)
-      pmix_fatal_error (rc, "PMIx_tool_init() failed");
-  }  /* let */
-
-  debug_printf ("Running as a PMIx tool\n");
+  initialize_as_tool (proxy_run);
 
   /*
-   * Object we use to register event handlers.
+   * Register the default event handler.
    */
-  register_event_handler_t event_registrar;
-
-  /* Default event handler */
-  debug_printf ("Registering default event handler\n");
-  {  /* let */
-    pmix::status_t rc =
-      event_registrar.register_event_handler (default_notification_fn,
-					      evhandler_reg_callbk);
-    if (PMIX_SUCCESS != rc)
-      pmix_fatal_error (rc, "Registering default event handler");
-  }  /* let */
+  register_default_event_handler();
 
   /*
-   * Objects used to synchronize initial and callback/event threads.
+   * Register for the "launcher is ready to communicate" event.
    */
-  release_t launcher_ready;	/* Launcher is ready to communicate */
-  release_t launcher_complete;	/* Launcher has completed launching */
-  release_t launcher_terminate;	/* Launcher has terminated */
+  release_t launcher_ready;
+  register_launcher_ready (&launcher_ready);
 
   /*
-   * Register to receive the "launcher-ready" event telling us that
-   * the launcher is ready for us to connect to it.  The "launcher"
-   * here is prun, mpirun, mpiexec, etc.
+   * Register for the "launcher has completed launching" event.
    */
-  debug_printf ("Registering \"launcher-ready\" event handler\n");
-  {  /* let */
-    pmix::status_t code = PMIX_LAUNCHER_READY;
-    pmix::info_t info[2], *iptr = info;
-    (iptr++)->load (PMIX_EVENT_RETURN_OBJECT, (void *) &launcher_ready);
-    (iptr++)->load (PMIX_EVENT_HDLR_NAME, "LAUNCHER-READY");
-    pmix::status_t rc =
-      event_registrar.register_event_handler (&code, 1,
-					      info, iptr - info,
-					      launcher_release_fn,
-					      evhandler_reg_callbk);
-    if (PMIX_SUCCESS != rc)
-      pmix_fatal_error (rc,
-			"Registering \"launcher-ready\" event handler");
-    if (PMIX_SUCCESS != event_registrar.lock_status)
-      pmix_fatal_error (event_registrar.lock_status,
-			"Registering \"launcher-ready\" event handler: lock status");
-  }  /* let */
-
-  /*
-   * Register to receive the "launch-complete" event, which will
-   * telling us the namespace of the job being debugged, so that we
-   * can fill in the MPIR_proctable[].
-   */
-  debug_printf ("Registering \"launcher-complete\" event handler\n");
-  {  /* let */
-    pmix::status_t code = PMIX_LAUNCH_COMPLETE;
-    pmix::info_t info[2], *iptr = info;
-    (iptr++)->load (PMIX_EVENT_RETURN_OBJECT, (void *) &launcher_complete);
-    (iptr++)->load (PMIX_EVENT_HDLR_NAME, "LAUNCHER-COMPLETE");
-    pmix::status_t rc =
-      event_registrar.register_event_handler (&code, 1,
-					      info, iptr - info,
-					      debugger_release_fn,
-					      evhandler_reg_callbk);
-    if (PMIX_SUCCESS != rc)
-      pmix_fatal_error (rc,
-			"Registering \"launch-complete\" event handler");
-    if (PMIX_SUCCESS != event_registrar.lock_status)
-      pmix_fatal_error (event_registrar.lock_status,
-			"Registering \"launch-complete\" event handler: lock status");
-  }  /* let */
+  release_t launcher_complete;
+  register_launcher_complete (&launcher_complete);
 
   /*
    * The namespace of the launcher process.
    */
-  char clientspace[PMIX_MAX_NSLEN+1];
+  char launcher_nspace[PMIX_MAX_NSLEN+1];
 
   /*
-   * We are going to spawn an intermediate launcher (prun, mpirun,
-   * etc.), and we will use the reference PMIx erver to start it.
-   * Tell it to wait after launch for directive prior to spawning the
-   * application.
+   * Spawn the launcher process.
    */
-  {  /* let */
-    /*
-     * Setup the launcher's application parameters.
-     */
-    pmix::status_t rc;
-    pmix::app_t app;
-				/* The executable name */
-    app.cmd = strdup (argv[argi]);
-				/* The argv to pass to the application */
-    PMIX_ARGV_APPEND (rc, app.argv, argv[argi]);
-    for (int n = argi + 1; n < argc; n++)
-      {
-	PMIX_ARGV_APPEND (rc, app.argv, argv[n]);
-      }	 /* for */
-				/* Try to use the same working directory */
-    char cwd[PATH_MAX];
-    getcwd (cwd, PATH_MAX);
-    app.cwd = strdup(cwd);
-				/* Just one launcher process please */
-    app.maxprocs = 1;
-    /*
-     * Provide job-level directives so the apps do what the user requested
-     */
-    pmix::info_t info[7], *iptr = info;
-				/* Map by slot */
-    (iptr++)->load (PMIX_MAPBY, "slot");
-				/* Tell the launcher to wait for directives */
-    char *tmp;
-    asprintf (&tmp, "%s:%d", myproc.nspace, myproc.rank);
-    pmix::envar_t envar ("PMIX_LAUNCHER_PAUSE_FOR_TOOL", tmp, ':');
-    free(tmp);
-    (iptr++)->load (PMIX_SET_ENVAR, &envar, PMIX_ENVAR);
-				/* stdout/stderr forwarding */
-    (iptr++)->load (PMIX_FWD_STDOUT, true);
-    (iptr++)->load (PMIX_FWD_STDERR, true);
-				/* Notify us when the job completes */
-    (iptr++)->load (PMIX_NOTIFY_COMPLETION, true);
-				/* We are spawning a tool */
-    (iptr++)->load (PMIX_SPAWN_TOOL, true);
-#ifdef PMIX_LAUNCHER_RENDEZVOUS_FILE
-#if 0
-    // I'm not sure what a rendezvous file is, but this program
-    // doesn't need it.
-				/* Have it output a specific rndz file */
-    (iptr++)->load (PMIX_LAUNCHER_RENDEZVOUS_FILE, "dbgr.rndz.txt");
-#endif
-#endif
-    /*
-     * Spawn the job - the function will return when the launcher has
-     * been launched.  Note that this doesn't tell us anything about
-     * the launcher's state - it just means that the launcher has been
-     * fork/exec'd.
-     */
-    debug_printf ("Spawning launcher '%s'\n", app.cmd);
-    rc = PMIx_Spawn (info, iptr - info, &app, 1, clientspace);
-    if (PMIX_SUCCESS != rc)
-      pmix_fatal_error (rc, "PMIx_Spawn() failed");
-    debug_printf ("Launcher's namespace is '%s'\n", clientspace);
-  }  /* let */
-
+#if 0  /* 0 MARKER */
+  if (!proxy_run)
+    spawn_launcher (launcher_nspace, argc - argi, &argv[argi]);
+  else
+    fork_exec_launcher (launcher_nspace, argc - argi, &argv[argi]);
+#else
+  spawn_launcher (launcher_nspace, argc - argi, &argv[argi], proxy_run);
+#endif /* 0 MARKER */
+    
   /*
    * Wait here for the launcher to declare itself ready.
    */
@@ -1206,74 +1679,15 @@ int main (int argc, char **argv)
   debug_printf ("Launcher is ready\n");
 
   /*
-   * Register callback for when the launcher terminates.
+   * Register for the "launcher has terminated" event.
    */
-  debug_printf ("Registering \"launcher-terminate\" event handler\n");
-  {  /* let */
-    pmix::status_t code = PMIX_ERR_JOB_TERMINATED;
-    launcher_terminate.nspace = strdup(clientspace);
-    pmix::info_t info[2], *iptr = info;
-    (iptr++)->load (PMIX_EVENT_RETURN_OBJECT, &launcher_terminate);
-				/* Only call me back when this specific job terminates */
-    pmix::proc_t proc (clientspace, PMIX_RANK_WILDCARD);
-    (iptr++)->load (PMIX_EVENT_AFFECTED_PROC, &proc, PMIX_PROC);
-    pmix::status_t rc =
-      event_registrar.register_event_handler (&code, 1,
-					      info, iptr - info,
-					      launcher_release_fn,
-					      evhandler_reg_callbk);
-    if (PMIX_SUCCESS != rc)
-      pmix_fatal_error (rc,
-			"Registering \"launch-terminate\" event handler");
-    if (PMIX_SUCCESS != event_registrar.lock_status)
-      pmix_fatal_error (event_registrar.lock_status,
-			"Registering \"launch-terminate\" event handler: lock status");
-  }  /* let */
+  release_t launcher_terminate;
+  register_launcher_terminate (&launcher_terminate, launcher_nspace);
 
   /*
    * Send the launch directives.
    */
-  {  /* let */
-				/* Provide a few job-level directives */
-    pmix_data_array_t darray;
-				/* Setup the infos for the data array */
-    pmix::info_t dinfo[4], *diptr = dinfo;
-#if 0
-    // A couple of examples of how to set environment variables.
-				/* Set FOOBAR=1 */
-    pmix::envar_t envar_foobar ("FOOBAR", "1", ':');
-    (diptr++)->load (PMIX_SET_ENVAR, &envar_foobar, PMIX_ENVAR);
-				/* Set PATH=/home/common/local/toad:$PATH */
-    pmix::envar_t envar_path ("PATH", "/home/common/local/toad", ':');
-    (diptr++)->load (PMIX_PREPEND_ENVAR, &envar_path, PMIX_ENVAR);
-#endif
-				/* Stop the processes in PMIx_Init() */
-    (diptr++)->load (PMIX_DEBUG_STOP_IN_INIT, true);
-				/* Notify us when the job is launched */
-    (diptr++)->load (PMIX_NOTIFY_LAUNCH, true);
-				/* Fill in the data array fields */
-    darray.type = PMIX_INFO;
-    darray.size = diptr - dinfo;
-    darray.array = dinfo;
-
-    pmix::info_t info[3], *iptr = info;
-				/* The launcher's namespace, rank 0 */
-    pmix::proc_t proc (clientspace, 0);
-				/* Deliver to the target launcher */
-    (iptr++)->load (PMIX_EVENT_CUSTOM_RANGE, &proc, PMIX_PROC);
-				/* Only non-default handlers */
-    (iptr++)->load (PMIX_EVENT_NON_DEFAULT, true);
-				/* Load the data array */
-    (iptr++)->load (PMIX_DEBUG_JOB_DIRECTIVES, &darray, PMIX_DATA_ARRAY);
-    debug_printf ("Sending launch directives\n");
-    pmix::status_t rc = 
-      PMIx_Notify_event (PMIX_LAUNCH_DIRECTIVE,
-			 NULL, PMIX_RANGE_CUSTOM,
-			 info, iptr - info,
-			 NULL, NULL);
-    if (PMIX_SUCCESS != rc)
-      pmix_fatal_error (rc, "PMIx_Notify_event() failed sending PMIX_LAUNCH_DIRECTIVE");
-  }  /* let */
+  send_launch_directives (launcher_nspace);
 
   /*
    * Wait for the launcher to launch the job and get the namespace of
@@ -1286,33 +1700,19 @@ int main (int argc, char **argv)
   /*
    * Get the application's namespace. 
    */
-  const char *appspace = launcher_complete.nspace;
+  const char *app_nspace = launcher_complete.nspace;
 
   /*
    * Extract the proctable and fill in the MPIR information.  If there
    * is a debugger controlling us and it knows about MPIR, it will
    * probably attach to the application processes.
    */
-  pmix_proc_table_to_mpir (appspace);
+  pmix_proc_table_to_mpir (app_nspace);
 
   /*
-   * Release the starter process and allow it to run.
+   * Release the launcher process and allow it to run.
    */
-  {  /* let */
-    pmix::proc_t proc (appspace, PMIX_RANK_WILDCARD);
-    pmix::info_t info[2], *iptr = info;
-				/* Deliver to the target nspace */
-    (iptr++)->load (PMIX_EVENT_CUSTOM_RANGE, &proc, PMIX_PROC);
-    (iptr++)->load (PMIX_EVENT_NON_DEFAULT, true);
-    debug_printf ("Sending debugger release\n");
-    pmix::status_t rc = 
-      PMIx_Notify_event (PMIX_ERR_DEBUGGER_RELEASE,
-			 NULL, PMIX_RANGE_CUSTOM,
-			 info, iptr - info,
-			 NULL, NULL);
-    if (PMIX_SUCCESS != rc)
-      pmix_fatal_error (rc, "PMIx_Notify_event() failed sending PMIX_ERR_DEBUGGER_RELEASE");
-  }  /* let */
+  release_launcher_process (app_nspace);
 
   /*
    * Wait for the launcher to terminate.
