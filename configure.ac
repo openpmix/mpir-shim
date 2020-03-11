@@ -392,6 +392,42 @@ MPIRSHIM_CHECK_ATTRIBUTES
 MPIRSHIM_CHECK_COMPILER_VERSION_ID
 
 
+############################################################################
+# final compiler config
+############################################################################
+mpirshim_show_subtitle "Compiler flags"
+
+#
+# This is needed for VPATH builds, so that it will -I the appropriate
+# include directory.  We delayed doing it until now just so that
+# '-I$(top_srcdir)' doesn't show up in any of the configure output --
+# purely aesthetic.
+#
+
+# Because mpirshim_config.h is created by AC_CONFIG_HEADERS, we
+# don't need to -I the builddir for src/include. However, we do
+# need to add it for mpirshim as it doesn't have an AC_CONFIG_HEADERS that
+# will install it for us. If we VPATH building, we do need to include the
+# source directories, however.
+#
+
+if test "$MPIRSHIM_TOP_BUILDDIR" != "$MPIRSHIM_TOP_SRCDIR"; then
+    # Note the embedded m4 directives here -- we must embed them
+    # rather than have successive assignments to these shell
+    # variables, lest the $(foo) names try to get evaluated here.
+    # Yuck!
+    CPPFLAGS='-I$(top_srcdir) -I$(top_builddir) -I$(top_srcdir)/src/include -I$(top_builddir)/src/include'" $CPPFLAGS"
+else
+    CPPFLAGS='-I$(top_srcdir) -I$(top_srcdir)/src/include'" $CPPFLAGS"
+fi
+
+#
+# Delayed the substitution of CFLAGS and CXXFLAGS until now because
+# they may have been modified throughout the course of this script.
+#
+
+AC_SUBST(CFLAGS)
+AC_SUBST(CXXFLAGS)
 
 AC_CONFIG_FILES([
     Makefile
