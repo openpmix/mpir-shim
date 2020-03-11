@@ -395,6 +395,7 @@ MPIRSHIM_CHECK_COMPILER_VERSION_ID
 
 AC_CONFIG_FILES([
     Makefile
+    src/Makefile
 ])
 
 AC_OUTPUT
