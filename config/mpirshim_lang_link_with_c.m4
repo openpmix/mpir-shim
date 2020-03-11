@@ -4,6 +4,8 @@ dnl Copyright (c) 2006      Los Alamos National Security, LLC.  All rights
 dnl                         reserved.
 dnl Copyright (c) 2010-2012 Cisco Systems, Inc.  All rights reserved.
 dnl Copyright (c) 2020      Intel, Inc.  All rights reserved.
+dnl Copyright (c) 2020      Research Organization for Information Science
+dnl                         and Technology (RIST).  All rights reserved.
 dnl $COPYRIGHT$
 dnl
 dnl Additional copyrights may follow
@@ -26,8 +28,8 @@ AC_DEFUN([MPIRSHIM_LANG_LINK_WITH_C], [
      AC_LANG_PUSH(C)
      rm -f conftest_c.$ac_ext
       cat > conftest_c.$ac_ext << EOF
-int $testfunc_name(int a);
-int $testfunc_name(int a) { return a; }
+int testfunc(int a);
+int testfunc(int a) { return a; }
 EOF
 
      # Now compile both parts
