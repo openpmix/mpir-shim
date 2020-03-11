@@ -13,8 +13,8 @@
 # Copyright (c) 2010      Oracle and/or its affiliates.  All rights
 #                         reserved.
 # Copyright (c) 2014-2020 Intel, Inc.  All rights reserved.
-# Copyright (c) 2016      Research Organization for Information Science
-#                         and Technology (RIST). All rights reserved.
+# Copyright (c) 2016-2020 Research Organization for Information Science
+#                         and Technology (RIST).  All rights reserved.
 # $COPYRIGHT$
 #
 # Additional copyrights may follow
@@ -24,7 +24,7 @@
 
 EXTRA_DIST = \
         distscript.sh \
-        prrte_get_version.m4sh \
+        mpirshim_get_version.m4sh \
         ltmain_nag_pthread.diff \
         ltmain_pgi_tp.diff \
         prrte_mca_priority_sort.pl \
@@ -32,4 +32,4 @@ EXTRA_DIST = \
         make_manpage.pl
 
 maintainer-clean-local:
-	rm -f prrte_get_version.sh
+	rm -f mpirshim_get_version.sh
