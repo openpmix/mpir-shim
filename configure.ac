@@ -20,8 +20,8 @@
 # Copyright (c) 2013      Mellanox Technologies, Inc.
 #                         All rights reserved.
 # Copyright (c) 2013-2020 Intel, Inc.  All rights reserved.
-# Copyright (c) 2014-2017 Research Organization for Information Science
-#                         and Technology (RIST). All rights reserved.
+# Copyright (c) 2014-2020 Research Organization for Information Science
+#                         and Technology (RIST).  All rights reserved.
 # Copyright (c) 2016-2017 IBM Corporation.  All rights reserved.
 # Copyright (c) 2018      Amazon.com, Inc. or its affiliates.
 #                         All Rights reserved.
@@ -396,3 +396,5 @@ MPIRSHIM_CHECK_COMPILER_VERSION_ID
 AC_CONFIG_FILES([
     Makefile
 ])
+
+AC_OUTPUT
