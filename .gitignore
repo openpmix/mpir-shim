@@ -49,4 +49,14 @@ config/ltversion.m4
 config/lt~obsolete.m4
 config/missing
 configure
+src/include/mpirshim_config.h.in
+Makefile
+config.status
+config/depcomp
+src/.deps/
+src/Makefile
+src/include/mpirshim_config.h
+src/include/stamp-h1
+src/include/version.h
+src/mpir
 

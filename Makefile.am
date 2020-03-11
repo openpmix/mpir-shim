@@ -15,6 +15,3 @@ EXTRA_DIST = \
         config/mpirshim_get_version.sh
 
 SUBDIRS = src
-
-mpirshimpkgconfigdir = $(libdir)/pkgconfig
-mpirshimpkgconfig_DATA = mpirshim.pc

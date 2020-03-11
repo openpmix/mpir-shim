@@ -259,7 +259,6 @@
 #define __STDC_LIMIT_MACROS
 #endif
 #include "mpirshim_config.h"
-#include "mpirshim_stdint.h"
 
 /***********************************************************************
  *

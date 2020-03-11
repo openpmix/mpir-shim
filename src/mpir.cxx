@@ -67,7 +67,7 @@
  *                         All rights reserved.
  * Copyright (c) 2009-2012 Cisco Systems, Inc.  All rights reserved.
  * Copyright (c) 2011      Oak Ridge National Labs.  All rights reserved.
- * Copyright (c) 2013-2019 Intel, Inc.  All rights reserved.
+ * Copyright (c) 2013-2020 Intel, Inc.  All rights reserved.
  * Copyright (c) 2015      Mellanox Technologies, Inc.  All rights reserved.
  * $COPYRIGHT$
  *
@@ -80,6 +80,7 @@
 /*
  * Copyright (c) 2020      Perforce Software, Inc.  All rights reserved.
  */
+#include "mpirshim_config.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -92,13 +93,15 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 
+extern char **environ;
+
 #include <pmix_tool.h>
 
 #include <string>
 #include <set>
 #include <vector>
 
-/*  */
+/* */
 /**********************************************************************/
 /* MPIR */
 /**********************************************************************/
@@ -114,7 +117,7 @@
  * needed for basic MPIR support.
  */
 
-/* 
+/*
  * The VOLATILE macro is defined to the volatile keyword for C++ and
  * ANSI C. Declaring a variable volatile informs the compiler that the
  * variable could be modified by an external entity and that its value
@@ -164,18 +167,18 @@ MPIR_PROCDESC *MPIR_proctable = 0;
  */
 int MPIR_proctable_size = 0;
 
-                                
+
 #define MPIR_NULL           0   /* The tool should ignore the event and continue
                                    the starter process.*/
-#define MPIR_DEBUG_SPAWNED  1   /* the starter process has spawned the MPI processes 
+#define MPIR_DEBUG_SPAWNED  1   /* the starter process has spawned the MPI processes
                                    and filled in the process descriptor table. The
-                                   tool can attach to any additional MPI processes 
-                                   that have appeared in the process descriptor table. 
+                                   tool can attach to any additional MPI processes
+                                   that have appeared in the process descriptor table.
                                    This is known as a “job spawn event”. */
 #define MPIR_DEBUG_ABORTING 2   /* The MPI job has aborted and the tool can notify
                                    the user of the abort condition. The tool can
-                                   read the reason for the job by reading the 
-                                   character string out of the starter process, 
+                                   read the reason for the job by reading the
+                                   character string out of the starter process,
                                    which is pointed to by the MPIR_debug_abort_string
                                    variable in the starter process. */
 
@@ -245,7 +248,7 @@ int MPIR_partial_attach_ok;
  */
 int MPIR_ignore_queues;
 
-/* 
+/*
  * Not implemented here:
  */
 // VOLATILE int MPIR_debug_gate;
@@ -254,12 +257,12 @@ int MPIR_ignore_queues;
 // char MPIR_server_arguments[1024];
 // char MPIR_attach_fifo[256];
 
-/*  */
+/* */
 /**********************************************************************/
 /* Scoped pointer implementation, very similar to the Boost version.
  * Use this templated class to easily delete a pointer when a stack
  * variable goes out of scope.
- * 
+ *
  * Example:
  *   {
  *     tv::scoped_ptr<test> t(new test(counter));   // Create a scoped_ptr
@@ -317,11 +320,11 @@ template <typename T> class scoped_ptr
   /* Prevent copying */
   scoped_ptr(const scoped_ptr &);
   scoped_ptr &operator =(const scoped_ptr &);
-        
+
   T *p;
 };  /* scoped_ptr */
 
-/*  */
+/* */
 /**********************************************************************/
 /* PMIx namespace */
 /**********************************************************************/
@@ -419,7 +422,7 @@ struct lock_t
   int count;
 
   lock_t()
-    { 
+    {
       pthread_mutex_init (&mutex, NULL);
       pthread_cond_init (&cond, NULL);
       active = true;
@@ -559,7 +562,7 @@ struct register_event_handler_t
 
 };  /* register_event_handler_t */
 
-/*  */
+/* */
 /**********************************************************************/
 /* PMIx to MPIR wrapper tool code */
 /**********************************************************************/
@@ -1547,7 +1550,7 @@ send_launch_directives (const char *launcher_nspace_)
   INFO_NEXT.load (PMIX_DEBUG_JOB_DIRECTIVES, &darray, PMIX_DATA_ARRAY);
 
   debug_printf ("Sending launch directives\n");
-  pmix::status_t rc = 
+  pmix::status_t rc =
     PMIx_Notify_event (PMIX_LAUNCH_DIRECTIVE,
 		       NULL, PMIX_RANGE_CUSTOM,
 		       &info.front(), info.size(),
@@ -1571,7 +1574,7 @@ release_launcher_process (const char *app_nspace_)
   INFO_NEXT.load (PMIX_EVENT_NON_DEFAULT, true);
 
   debug_printf ("Sending debugger release\n");
-  pmix::status_t rc = 
+  pmix::status_t rc =
     PMIx_Notify_event (PMIX_ERR_DEBUGGER_RELEASE,
 		       NULL, PMIX_RANGE_CUSTOM,
 		       &info.front(), info.size(),
@@ -1670,7 +1673,7 @@ int main (int argc, char **argv)
 #else
   spawn_launcher (launcher_nspace, argc - argi, &argv[argi], proxy_run);
 #endif /* 0 MARKER */
-    
+
   /*
    * Wait here for the launcher to declare itself ready.
    */
@@ -1698,7 +1701,7 @@ int main (int argc, char **argv)
   debug_printf ("Launcher's launch completed\n");
 
   /*
-   * Get the application's namespace. 
+   * Get the application's namespace.
    */
   const char *app_nspace = launcher_complete.nspace;
 

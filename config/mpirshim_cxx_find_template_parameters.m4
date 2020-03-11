@@ -12,6 +12,8 @@ dnl Copyright (c) 2004-2005 The Regents of the University of California.
 dnl                         All rights reserved.
 dnl Copyright (c) 2008      Cisco Systems, Inc.  All rights reserved.
 dnl Copyright (c) 2020      Intel, Inc.  All rights reserved.
+dnl Copyright (c) 2020      Research Organization for Information Science
+dnl                         and Technology (RIST).  All rights reserved.
 dnl $COPYRIGHT$
 dnl
 dnl Additional copyrights may follow
@@ -19,7 +21,7 @@ dnl
 dnl $HEADER$
 dnl
 
-AC_DEFUN([MPIRSHIIM_CXX_FIND_TEMPLATE_PARAMETERS],[
+AC_DEFUN([MPIRSHIM_CXX_FIND_TEMPLATE_PARAMETERS],[
 #
 # Arguments: none
 #
