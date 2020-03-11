@@ -26,7 +26,7 @@
 
 AC_DEFUN([MPIRSHIM_CHECK_PMIX],[
 
-    MPIRSHIM_VAR_SCOPE_PUSH([mpirshim_external_pmix_save_CPPFLAGS mpirshim_external_pmix_save_LDFLAGS mpirshim_external_pmix_save_LIBS])
+    MPIRSHIM_VAR_SCOPE_PUSH([mpirshim_external_pmix_save_CPPFLAGS mpirshim_external_pmix_save_LDFLAGS mpirshim_external_pmix_save_LIBS mpirshim_pmix_ldflags])
 
     AC_ARG_WITH([pmix],
                 [AC_HELP_STRING([--with-pmix(=DIR)],
@@ -160,7 +160,8 @@ AC_DEFUN([MPIRSHIM_CHECK_PMIX],[
 
         AS_IF([test "$pmix_ext_install_dir" != "/usr"],
               [pmix_CPPFLAGS="-I$pmix_ext_install_dir/include $CPPFLAGS"
-               pmix_LDFLAGS="-L$pmix_ext_install_libdir $LDFLAGS"],
+               pmix_LDFLAGS="-L$pmix_ext_install_libdir"
+               RPATHIFY_LDFLAGS([pmix_LDFLAGS])],
                [pmix_CPPFLAGS=""
                 pmix_LDFLAGS=""])
         pmix_LIBS=-lpmix

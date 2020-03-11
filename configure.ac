@@ -187,7 +187,6 @@ MPIRSHIM_BASIC_SETUP
 # Configuration options
 ############################################################################
 
-MPIRSHIM_CONFIGURE_OPTIONS
 MPIRSHIM_CHECK_OS_FLAVORS
 MPIRSHIM_CHECK_PMIX
 
