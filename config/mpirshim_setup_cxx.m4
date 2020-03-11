@@ -221,7 +221,7 @@ AC_DEFUN([_MPIRSHIM_SETUP_CXX_COMPILER_BACKEND],[
 
     # Make sure we can link with the C compiler
     if test "$mpirshim_cv_cxx_compiler_vendor" != "microsoft"; then
-      MPIRSHIM_LANG_LINK_WITH_C([C++], [],
+      MPIRSHIM_TEST_LINK_C_AND_CXX([],
         [cat <<EOF >&2
 **********************************************************************
 * It appears that your C++ compiler is unable to link against object
