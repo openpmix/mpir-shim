@@ -159,13 +159,15 @@ AC_DEFUN([MPIRSHIM_CHECK_PMIX],[
                AC_MSG_ERROR([cannot continue])])
 
         AS_IF([test "$pmix_ext_install_dir" != "/usr"],
-              [CPPFLAGS="-I$pmix_ext_install_dir/include $CPPFLAGS"
-               LDFLAGS="-L$pmix_ext_install_libdir $LDFLAGS"])
+              [pmix_CPPFLAGS="-I$pmix_ext_install_dir/include $CPPFLAGS"
+               pmix_LDFLAGS="-L$pmix_ext_install_libdir $LDFLAGS"],
+               [pmix_CPPFLAGS=""
+                pmix_LDFLAGS=""])
+        pmix_LIBS=-lpmix
 
-        MPIRSHIM_FLAGS_APPEND_UNIQ(CPPFLAGS, -I$pmix_ext_install_dir/include)
-        MPIRSHIM_FLAGS_APPEND_UNIQ(LDFLAGS, -L$pmix_ext_install_libdir)
-
-        MPIRSHIM_FLAGS_APPEND_UNIQ(LIBS, -lpmix)
+        AC_SUBST(pmix_CPPFLAGS)
+        AC_SUBST(pmix_LDFLAGS)
+        AC_SUBST(pmix_LIBS)
     fi
 
     MPIRSHIM_SUMMARY_ADD([[Required Packages]],[[PMIx]],[pmix],[yes ($pmix_ext_install_dir)])
