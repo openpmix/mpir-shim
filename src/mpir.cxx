@@ -638,6 +638,7 @@ pmix_fatal_error (pmix::status_t rc_, const char *format_ ...)
 	     rc_);
   fprintf (stderr, "\n");
   PMIx_tool_finalize();
+  rmdir(session_dirname.c_str());
   exit (1);
 }  /* pmix_fatal_error */
 
@@ -1233,7 +1234,8 @@ initialize_as_tool (bool proxy_run_)
       INFO_NEXT.load (PMIX_TOOL_NSPACE, nspace.c_str());
 				/* We're always rank 0 */
       INFO_NEXT.load (PMIX_TOOL_RANK, uint32_t(0));
-    }  /* else */
+      INFO_NEXT.load (PMIX_LAUNCHER, true);
+   }  /* else */
 
 				 /* PMIx_tool_init() starts a thread running PMIx progress_engine() */
   pmix::status_t rc = PMIx_tool_init (&myproc, &info.front(), info.size());
@@ -1446,7 +1448,7 @@ spawn_launcher (char *launcher_nspace_,
    */
   debug_printf ("Spawning launcher '%s'\n", app.cmd);
   pmix::status_t rc = PMIx_Spawn (&info.front(), info.size(), &app, 1, launcher_nspace_);
-  if (PMIX_SUCCESS != rc)
+  if (PMIX_SUCCESS != rc && PMIX_OPERATION_SUCCEEDED != rc)
     pmix_fatal_error (rc, "PMIx_Spawn() failed");
   debug_printf ("Launcher's namespace is '%s'\n", launcher_nspace_);
 }  /* spawn_launcher */
