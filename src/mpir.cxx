@@ -31,7 +31,7 @@
  * to leave the spawned processes around, which have to be cleaned up
  * manually.  The most common thing to go wrong is to try to launch a
  * non-PMIx application with a PMIx launcher.  For example, the
- * following is know to NOT work:
+ * following is known to NOT work:
  *
  *   mpir prun -n 4 hostname
  *
@@ -92,6 +92,7 @@
 #include <errno.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <dirent.h>
 
 extern char **environ;
 
@@ -101,7 +102,6 @@ extern char **environ;
 #include <set>
 #include <vector>
 
-/* */
 /**********************************************************************/
 /* MPIR */
 /**********************************************************************/
@@ -257,7 +257,6 @@ int MPIR_ignore_queues;
 // char MPIR_server_arguments[1024];
 // char MPIR_attach_fifo[256];
 
-/* */
 /**********************************************************************/
 /* Scoped pointer implementation, very similar to the Boost version.
  * Use this templated class to easily delete a pointer when a stack
@@ -324,7 +323,100 @@ template <typename T> class scoped_ptr
   T *p;
 };  /* scoped_ptr */
 
-/* */
+/**********************************************************************/
+/* Forward references */
+
+#if (__GNUC__)
+static std::string
+form_string (const char *format_ ...) __attribute__ ((format (printf, 1, 2)));
+#else
+static std::string
+form_string (const char *format_ ...);
+#endif
+
+/**********************************************************************/
+/* Return the system error string that corresponds to errno. */
+
+static std::string
+get_errno_string (int errno_ = -1)
+{
+  if (-1 == errno)
+    errno_ = errno;
+
+  char *errstr = (char *)strerror (errno_);
+  if (errstr)
+    return errstr;
+  else
+    return form_string ("Error number %d", errno_);
+} /* get_errno_string */
+
+/**********************************************************************/
+/* Recursively delete the files and subdirectories in the given
+ * directory, or as many files and subdirectories as possible.
+ *
+ * Returns an empty string on complete success, otherwise returns the
+ * error string of the first failure encountered.
+ */
+
+static std::string
+recursively_delete_directory (const char *dir_name_); /* Forward reference */
+
+static std::string
+recursively_delete_directory_contents (const char *dir_name_)
+{
+  DIR *dir = opendir (dir_name_);
+  if (!dir)
+    return (ENOENT != errno
+	    ? form_string ("opendir(\"%s\") failed: %s",
+			   dir_name_, get_errno_string().c_str())
+	    : 0);
+  int err;
+  std::string first_error;
+  struct dirent *entry;
+  while ((entry = readdir (dir)))
+    {
+      if (!strcmp (entry->d_name, ".") ||
+	  !strcmp (entry->d_name, ".."))
+	continue;
+      const std::string path (std::string (dir_name_) + "/" + entry->d_name);
+      if (DT_DIR == entry->d_type)
+	{
+	  const std::string error (recursively_delete_directory (path.c_str()));
+	  if (first_error.empty() && !error.empty())
+	    first_error = error;
+	}  /* if */
+      else
+	{
+	  while (-1 == (err = unlink (path.c_str()) && EINTR == errno));
+	  if (first_error.empty() && -1 == err)
+	    first_error = form_string ("unlink(\"%s\") failed: %s",
+				       path.c_str(), get_errno_string().c_str());
+	}  /* else */
+    }  /* while */
+  closedir (dir);
+  dir = 0;
+  return first_error;
+}  /* recursively_delete_directory_contents */
+
+/**********************************************************************/
+/* Recursively delete the directory and all of its contents, or as
+ * many files and directories as possible.
+ *
+ * Returns an empty string on complete success, otherwise returns the
+ * error string of the first failure encountered.
+ */
+
+static std::string
+recursively_delete_directory (const char *dir_name_)
+{
+  std::string first_error = recursively_delete_directory_contents (dir_name_);
+  int err;
+  while (-1 == (err = unlink (dir_name_) && EINTR == errno));
+  if (first_error.empty() && -1 == err && ENOENT != errno)
+    first_error = form_string ("rmdir(\"%s\") failed: %s", dir_name_, get_errno_string().c_str());
+  return first_error;
+}  /* recursively_delete_directory */
+
 /**********************************************************************/
 /* PMIx namespace */
 /**********************************************************************/
@@ -562,7 +654,6 @@ struct register_event_handler_t
 
 };  /* register_event_handler_t */
 
-/* */
 /**********************************************************************/
 /* PMIx to MPIR wrapper tool code */
 /**********************************************************************/
@@ -638,7 +729,7 @@ pmix_fatal_error (pmix::status_t rc_, const char *format_ ...)
 	     rc_);
   fprintf (stderr, "\n");
   PMIx_tool_finalize();
-  rmdir(session_dirname.c_str());
+  recursively_delete_directory (session_dirname.c_str());
   exit (1);
 }  /* pmix_fatal_error */
 
@@ -675,11 +766,6 @@ debug_printf (const char *format_ ...)
 /**********************************************************************/
 /* Format a string into an allocated buffer and return the result.
    The caller should delete the string. */
-
-#if (__GNUC__)
-static std::string
-form_string (const char *format_ ...) __attribute__ ((format (printf, 1, 2)));
-#endif
 
 static pthread_mutex_t form_string_mutex = PTHREAD_MUTEX_INITIALIZER;
 
@@ -1246,8 +1332,8 @@ initialize_as_tool (bool proxy_run_)
   if (proxy_run_)
     {
 				/* Fill in our nspace/rank to use later */
-      strcpy (myproc.nspace, nspace.c_str());
-      myproc.rank = 0;
+//      strcpy (myproc.nspace, nspace.c_str());
+//      myproc.rank = 0;
 				/* Setup the session paths */
       setup_session_paths();
     }	/* if */
@@ -1367,6 +1453,32 @@ register_launcher_terminate (release_t *launcher_terminate_,
     pmix_fatal_error (event_registrar.lock_status,
 		      "Registering \"launch-terminate\" event handler: lock status");
 }  /* register_launcher_terminate */
+
+/**********************************************************************/
+/* Connect to the PMIx server for a proxy run. */
+
+static void
+connect_to_server()
+{
+  NOTE_ENTRY_EXIT();
+
+  /*
+   * Attributes for connecting to the server.
+   */
+  DEFINE_INFO();
+				/* Rendezvous file passed in PMIX_LAUNCHER_RENDEZVOUS_FILE */
+  INFO_NEXT.load (PMIX_TOOL_ATTACHMENT_FILE, rendezvous_filename.c_str());
+				/* Number of times to try to connect */
+  INFO_NEXT.load (PMIX_CONNECT_MAX_RETRIES, uint32_t(100));
+				/* Number of seconds to wait between connect attempts */
+  INFO_NEXT.load (PMIX_CONNECT_RETRY_DELAY, uint32_t(0));
+
+  debug_printf ("Connecting tool to server\n");
+  pmix::status_t rc = PMIx_tool_connect_to_server (&myproc, &info.front(), info.size());
+  if (PMIX_SUCCESS != rc)
+    pmix_fatal_error (rc, "PMIx_tool_connect_to_server() failed");
+  debug_printf ("Connected tool to server\n");
+}  /* connect_to_server */
 
 /**********************************************************************/
 /* Spawn an intermediate launcher (prun) using PMIx_Spawn().  Tell the
@@ -1668,6 +1780,12 @@ int main (int argc, char **argv)
 #else
   spawn_launcher (launcher_nspace, argc - argi, &argv[argi], proxy_run);
 #endif /* 0 MARKER */
+
+  /*
+   * Connect to the server.
+   */
+  if (proxy_run)
+    connect_to_server();
 
   /*
    * Wait here for the launcher to declare itself ready.
