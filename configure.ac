@@ -187,6 +187,69 @@ MPIRSHIM_BASIC_SETUP
 # Configuration options
 ############################################################################
 
+#
+# Is this a developer copy?
+#
+
+if test -d .git; then
+    MPIRSHIM_DEVEL=1
+else
+    MPIRSHIM_DEVEL=0
+fi
+
+#
+# Developer picky compiler options
+#
+
+AC_MSG_CHECKING([if want developer-level compiler pickyness])
+AC_ARG_ENABLE(picky,
+    AC_HELP_STRING([--enable-picky],
+                   [enable developer-level compiler pickyness when building MPIR Shim (default: disabled, unless a .git directory is found in the build tree)]))
+if test "$enable_picky" = "yes"; then
+    AC_MSG_RESULT([yes])
+    WANT_PICKY_COMPILER=1
+else
+    AC_MSG_RESULT([no])
+    WANT_PICKY_COMPILER=0
+fi
+#################### Developer default override ####################
+if test "$WANT_PICKY_COMPILER" = "0" && test -z "$enable_picky" && test "$MPIRSHIM_DEVEL" = 1; then
+    WANT_PICKY_COMPILER=1
+    echo "--> developer override: enable picky compiler by default"
+fi
+#################### Developer default override ####################
+
+#
+# Developer debugging
+#
+AC_MSG_CHECKING([if want developer-level debugging code])
+AC_ARG_ENABLE(debug,
+    AC_HELP_STRING([--enable-debug],
+                   [enable developer-level debugging code (not for general MPI users!) (default: disabled)]))
+if test "$enable_debug" = "yes" || test "$MPIRSHIM_DEVEL" = "1"; then
+    AC_MSG_RESULT([yes])
+    WANT_DEBUG=1
+else
+    AC_MSG_RESULT([no])
+    WANT_DEBUG=0
+fi
+
+
+if test "$WANT_DEBUG" = "0"; then
+    CFLAGS="-DNDEBUG $CFLAGS"
+    CXXFLAGS="-DNDEBUG $CXXFLAGS"
+else
+    CFLAGS="-DDEBUG -g $CFLAGS"
+    CXXFLAGS="-DDEBUG -g $CXXFLAGS"
+fi
+AC_DEFINE_UNQUOTED(MPIRSHIM_ENABLE_DEBUG, $WANT_DEBUG,
+    [Whether we want developer-level debugging code or not])
+
+AC_ARG_ENABLE(debug-symbols,
+    AC_HELP_STRING([--disable-debug-symbols],
+        [Disable adding compiler flags to enable debugging symbols if --enable-debug is specified.  For non-debugging builds, this flag has no effect.]))
+
+
 MPIRSHIM_CHECK_OS_FLAVORS
 MPIRSHIM_CHECK_PMIX
 

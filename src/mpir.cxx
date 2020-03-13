@@ -638,6 +638,7 @@ pmix_fatal_error (pmix::status_t rc_, const char *format_ ...)
 	     rc_);
   fprintf (stderr, "\n");
   PMIx_tool_finalize();
+  rmdir(session_dirname.c_str());
   exit (1);
 }  /* pmix_fatal_error */
 
@@ -1233,7 +1234,8 @@ initialize_as_tool (bool proxy_run_)
       INFO_NEXT.load (PMIX_TOOL_NSPACE, nspace.c_str());
 				/* We're always rank 0 */
       INFO_NEXT.load (PMIX_TOOL_RANK, uint32_t(0));
-    }  /* else */
+      INFO_NEXT.load (PMIX_LAUNCHER, true);
+   }  /* else */
 
 				 /* PMIx_tool_init() starts a thread running PMIx progress_engine() */
   pmix::status_t rc = PMIx_tool_init (&myproc, &info.front(), info.size());
@@ -1383,7 +1385,6 @@ spawn_launcher (char *launcher_nspace_,
    * Setup the launcher's application parameters.
    */
   pmix::app_t app;
-  pmix::envar_t envar;
 				/* The executable name */
   app.cmd = strdup (argv_[0]);
 				/* The argv to pass to the application */
@@ -1393,11 +1394,15 @@ spawn_launcher (char *launcher_nspace_,
       if (PMIX_SUCCESS != rc)
 	pmix_fatal_error (rc, "PMIX_ARG_APPEND() failed");
     }  /* for */
-				/* Copy the environment */
-  for (char **envp = environ; *envp; envp++)
+
+				/* Copy the environment, if it's a proxy run */
+  if (proxy_run_)
     {
-      app.env_append (*envp);
-    }  /* for */
+      for (char **envp = environ; *envp; envp++)
+	{
+	  app.env_append (*envp);
+	}  /* for */
+    }  /* if */
 				/* Try to use the same working directory */
   char cwd[PATH_MAX];
   getcwd (cwd, PATH_MAX);
@@ -1410,27 +1415,23 @@ spawn_launcher (char *launcher_nspace_,
   DEFINE_INFO();
 				/* Map by slot */
   INFO_NEXT.load (PMIX_MAPBY, "slot");
-#if 0  /* 0 MARKER */
+				/* Set some environment variables */
   if (proxy_run_)
     {
 				/* Have it use this session directory */
-      envar.load ("PMIX_SERVER_TMPDIR", session_dirname.c_str(), ':');
-      INFO_NEXT.load (PMIX_SET_ENVAR, &envar, PMIX_ENVAR);
-				/* Have it output a specific rendezvous file */
-      envar.load ("PMIX_LAUNCHER_RENDEZVOUS_FILE", rendezvous_filename.c_str(), ':');
-      INFO_NEXT.load (PMIX_SET_ENVAR, &envar, PMIX_ENVAR);
-    }  /* if */
-				/* Tell the launcher to wait for directives */
-  envar.load ("PMIX_LAUNCHER_PAUSE_FOR_TOOL", form_string ("%s:%d", myproc.nspace, myproc.rank).c_str(), ':');
-  INFO_NEXT.load (PMIX_SET_ENVAR, &envar, PMIX_ENVAR);
-#else
-  if (proxy_run_)
-    {
       app.env_setenv ("PMIX_SERVER_TMPDIR", session_dirname.c_str());
+				/* Have it output a specific rendezvous file */
       app.env_setenv ("PMIX_LAUNCHER_RENDEZVOUS_FILE", rendezvous_filename.c_str());
+				/* Tell the launcher to wait for directives */
       app.env_setenv ("PMIX_LAUNCHER_PAUSE_FOR_TOOL", form_string ("%s:%d", myproc.nspace, myproc.rank).c_str());
     }  /* if */
-#endif /* 0 MARKER */
+  else
+    {
+      pmix::envar_t envar;
+				/* Tell the launcher to wait for directives */
+      envar.load ("PMIX_LAUNCHER_PAUSE_FOR_TOOL", form_string ("%s:%d", myproc.nspace, myproc.rank).c_str(), ':');
+      INFO_NEXT.load (PMIX_SET_ENVAR, &envar, PMIX_ENVAR);
+    }  /* else */
 				/* stdout/stderr forwarding */
   INFO_NEXT.load (PMIX_FWD_STDOUT, true);
   INFO_NEXT.load (PMIX_FWD_STDERR, true);
@@ -1438,12 +1439,6 @@ spawn_launcher (char *launcher_nspace_,
   INFO_NEXT.load (PMIX_NOTIFY_COMPLETION, true);
 				/* We are spawning a tool */
   INFO_NEXT.load (PMIX_SPAWN_TOOL, true);
-#if 0
-				/* Have it use this session directory */
-  INFO_NEXT.load (PMIX_SERVER_TMPDIR, session_dirname.c_str());
-				/* Have it output a specific rendezvous file */
-  INFO_NEXT.load (PMIX_LAUNCHER_RENDEZVOUS_FILE, rendezvous_filename.c_str());
-#endif
 
   /*
    * Spawn the job - the function will return when the launcher has
@@ -1453,7 +1448,7 @@ spawn_launcher (char *launcher_nspace_,
    */
   debug_printf ("Spawning launcher '%s'\n", app.cmd);
   pmix::status_t rc = PMIx_Spawn (&info.front(), info.size(), &app, 1, launcher_nspace_);
-  if (PMIX_SUCCESS != rc)
+  if (PMIX_SUCCESS != rc && PMIX_OPERATION_SUCCEEDED != rc)
     pmix_fatal_error (rc, "PMIx_Spawn() failed");
   debug_printf ("Launcher's namespace is '%s'\n", launcher_nspace_);
 }  /* spawn_launcher */
