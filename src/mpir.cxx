@@ -42,6 +42,12 @@
 /*
  * Update log
  *
+ * Mar 14 2020 JVD: Delete session directory however we exit.
+ *		    Added signal handlers.
+ *		    Fixed recursively_delete_directory() bugs.
+ *		    Treat printf-style format type mismatches as errors.
+ * Mar 13 2020 JVD: Added recursively_delete_directory().
+ * Mar 12 2020 JVD: Fixed the non-proxy run (prun) support.
  * Jan 31 2020 JVD: Cleaned up the code to make it more production worthy.
  * Jan 28 2020 JVD: Added support for MPIR.
  * Jan 20 2020 JVD: Copied from PMIs's indirect.c example program, made more
@@ -93,6 +99,7 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <dirent.h>
+#include <signal.h>
 
 extern char **environ;
 
@@ -101,6 +108,13 @@ extern char **environ;
 #include <string>
 #include <set>
 #include <vector>
+
+/**********************************************************************/
+/* Treat printf-style format type mismatches as errors */
+
+#if (__GNUC__)
+#pragma GCC diagnostic error "-Wformat"
+#endif
 
 /**********************************************************************/
 /* MPIR */
@@ -334,6 +348,14 @@ static std::string
 form_string (const char *format_ ...);
 #endif
 
+#if (__GNUC__)
+static void
+debug_printf (const char *format_ ...) __attribute__ ((format (printf, 1, 2)));
+#else
+static void
+debug_printf (const char *format_ ...);
+#endif
+
 /**********************************************************************/
 /* Return the system error string that corresponds to errno. */
 
@@ -387,7 +409,7 @@ recursively_delete_directory_contents (const char *dir_name_)
 	}  /* if */
       else
 	{
-	  while (-1 == (err = unlink (path.c_str()) && EINTR == errno));
+	  while (-1 == ((err = unlink (path.c_str())) && EINTR == errno));
 	  if (first_error.empty() && -1 == err)
 	    first_error = form_string ("unlink(\"%s\") failed: %s",
 				       path.c_str(), get_errno_string().c_str());
@@ -411,9 +433,10 @@ recursively_delete_directory (const char *dir_name_)
 {
   std::string first_error = recursively_delete_directory_contents (dir_name_);
   int err;
-  while (-1 == (err = unlink (dir_name_) && EINTR == errno));
+  while (-1 == ((err = rmdir (dir_name_)) && EINTR == errno));
   if (first_error.empty() && -1 == err && ENOENT != errno)
-    first_error = form_string ("rmdir(\"%s\") failed: %s", dir_name_, get_errno_string().c_str());
+    first_error = form_string ("rmdir(\"%s\") failed: %s",
+			       dir_name_, get_errno_string().c_str());
   return first_error;
 }  /* recursively_delete_directory */
 
@@ -665,6 +688,22 @@ static bool debug_output = false;	/* Generate debug output? */
 static std::string session_dirname;
 static std::string rendezvous_filename;
 
+/**********************************************************************/
+/* If we created a session directory, delete it when we exit. */
+
+struct delete_session_directory_t
+{
+  ~delete_session_directory_t()
+    {
+      if (!session_dirname.empty())
+	{
+	  debug_printf ("Deleting session directory '%s'\n",
+			session_dirname.c_str());
+	  recursively_delete_directory (session_dirname.c_str());
+	}  /* if */
+    }  /* ~delete_session_directory_t */
+} delete_session_directory;
+
 /* Note that we share the executable and hostname strings across
  * MPIR_proctable entries.  MPIR says:
  *
@@ -729,17 +768,11 @@ pmix_fatal_error (pmix::status_t rc_, const char *format_ ...)
 	     rc_);
   fprintf (stderr, "\n");
   PMIx_tool_finalize();
-  recursively_delete_directory (session_dirname.c_str());
   exit (1);
 }  /* pmix_fatal_error */
 
 /**********************************************************************/
 /* Internal "debug printf" function. */
-
-#if (__GNUC__)
-static void
-debug_printf (const char *format_ ...) __attribute__ ((format (printf, 1, 2)));
-#endif
 
 static pthread_mutex_t debug_printf_mutex = PTHREAD_MUTEX_INITIALIZER;
 
@@ -1288,7 +1321,8 @@ setup_session_paths()
 
   int rc = mkdir (session_dirname.c_str(), S_IRWXU);
   if (0 != rc)
-    fatal_error ("mkdir() failed: errno = %d", errno);
+    fatal_error ("mkdir() failed: %s",
+		 get_errno_string().c_str());
 }  /* setup_session_paths */
 
 /**********************************************************************/
@@ -1581,7 +1615,8 @@ fork_exec_launcher (char *launcher_nspace_,
 
   pid_t pid = fork();
   if (pid == -1)
-    fatal_error ("fork() failed: errno = %d", errno);
+    fatal_error ("fork() failed: %s",
+		 get_errno_string().c_str());
   else if (pid == 0)
     {
 				/* Child process */
@@ -1590,11 +1625,13 @@ fork_exec_launcher (char *launcher_nspace_,
 	  -1 == setenv ("PMIX_LAUNCHER_RENDEZVOUS_FILE", rendezvous_filename.c_str(), true) ||
 	  -1 == setenv ("PMIX_LAUNCHER_PAUSE_FOR_TOOL", pause_str.c_str(), true))
 	{
-	  fatal_error ("setenv() failed: errno = %d", errno);
+	  fatal_error ("setenv() failed: %s",
+		       get_errno_string().c_str());
 	}  /* if */
 				/* exec() the launcher */
       execvp (argv_[0], argv_);
-      fatal_error ("execvp() failed: errno = %d", errno);
+      fatal_error ("execvp() failed: %s",
+		   get_errno_string().c_str());
     }  /* else-if */
 
   /*
@@ -1691,6 +1728,30 @@ release_launcher_process (const char *app_nspace_)
 }  /* release_launcher_process */
 
 /**********************************************************************/
+/* Setup signal handlers for certain signals. */
+
+static void
+signal_handler (int signo_, siginfo_t *siginfo_, void *)
+{
+  (void) PMIx_tool_finalize();
+  exit (1);
+}  /* signal_handler */
+
+static void
+setup_signal_handlers()
+{
+  struct sigaction sa;
+  sa.sa_flags = SA_SIGINFO|SA_RESTART;
+  sa.sa_sigaction = signal_handler;
+  sigemptyset (&sa.sa_mask);
+  if (-1 == sigaction (SIGHUP, &sa, 0) ||
+      -1 == sigaction (SIGINT, &sa, 0) ||
+      -1 == sigaction (SIGTERM, &sa, 0))
+    fatal_error ("sigaction() failed: %s",
+		 get_errno_string().c_str());
+}  /* setup_signal_handlers */
+
+/**********************************************************************/
 /* The main() program. */
 
 int main (int argc, char **argv)
@@ -1741,6 +1802,11 @@ int main (int argc, char **argv)
   debug_printf ("Launcher '%s', performing a %s\n",
 		launcher_base,
 		proxy_run ? "proxy run" : "NON-proxy run ");
+
+  /*
+   * Setup signal handlers.
+   */
+  setup_signal_handlers();
 
   /*
    * Initialize ourselves as a PMIx tool.
