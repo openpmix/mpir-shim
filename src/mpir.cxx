@@ -42,6 +42,7 @@
 /*
  * Update log
  *
+ * Mar 26 2020 JVD: Fixed parens in while() EINTR loops.
  * Mar 14 2020 JVD: Delete session directory however we exit.
  *		    Added signal handlers.
  *		    Fixed recursively_delete_directory() bugs.
@@ -409,7 +410,7 @@ recursively_delete_directory_contents (const char *dir_name_)
 	}  /* if */
       else
 	{
-	  while (-1 == ((err = unlink (path.c_str())) && EINTR == errno));
+	  while (-1 == (err = unlink (path.c_str())) && EINTR == errno);
 	  if (first_error.empty() && -1 == err)
 	    first_error = form_string ("unlink(\"%s\") failed: %s",
 				       path.c_str(), get_errno_string().c_str());
@@ -433,7 +434,7 @@ recursively_delete_directory (const char *dir_name_)
 {
   std::string first_error = recursively_delete_directory_contents (dir_name_);
   int err;
-  while (-1 == ((err = rmdir (dir_name_)) && EINTR == errno));
+  while (-1 == (err = rmdir (dir_name_)) && EINTR == errno);
   if (first_error.empty() && -1 == err && ENOENT != errno)
     first_error = form_string ("rmdir(\"%s\") failed: %s",
 			       dir_name_, get_errno_string().c_str());
