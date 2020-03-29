@@ -1601,59 +1601,6 @@ spawn_launcher (char *launcher_nspace_,
 }  /* spawn_launcher */
 
 /**********************************************************************/
-/* Spawn an intermediate launcher (mpirun) using fork()/exec().  Tell
- * the launcher to wait for directives prior to spawning the
- * application. */
-
-static void
-fork_exec_launcher (char *launcher_nspace_,
-		    int argc_,
-		    char **argv_)
-{
-  NOTE_ENTRY_EXIT();
-
-  debug_printf ("fork/exec launcher '%s'\n", argv_[0]);
-
-  pid_t pid = fork();
-  if (pid == -1)
-    fatal_error ("fork() failed: %s",
-		 get_errno_string().c_str());
-  else if (pid == 0)
-    {
-				/* Child process */
-      const std::string pause_str (form_string ("%s:%d", myproc.nspace, myproc.rank).c_str());
-      if (-1 == setenv ("PMIX_SERVER_TMPDIR", session_dirname.c_str(), true) ||
-	  -1 == setenv ("PMIX_LAUNCHER_RENDEZVOUS_FILE", rendezvous_filename.c_str(), true) ||
-	  -1 == setenv ("PMIX_LAUNCHER_PAUSE_FOR_TOOL", pause_str.c_str(), true))
-	{
-	  fatal_error ("setenv() failed: %s",
-		       get_errno_string().c_str());
-	}  /* if */
-				/* exec() the launcher */
-      execvp (argv_[0], argv_);
-      fatal_error ("execvp() failed: %s",
-		   get_errno_string().c_str());
-    }  /* else-if */
-
-  /*
-   * Attributes for connecting to the server.
-   */
-  DEFINE_INFO();
-				/* Rendezvous file passed in PMIX_LAUNCHER_RENDEZVOUS_FILE */
-  INFO_NEXT.load (PMIX_TOOL_ATTACHMENT_FILE, rendezvous_filename.c_str());
-				/* Number of times to try to connect */
-  INFO_NEXT.load (PMIX_CONNECT_MAX_RETRIES, uint32_t(100));
-				/* Number of seconds to wait between connect attempts */
-  INFO_NEXT.load (PMIX_CONNECT_RETRY_DELAY, uint32_t(0));
-
-  debug_printf ("Connecting tool to server '%s'\n", argv_[0]);
-  pmix::status_t rc = PMIx_tool_connect_to_server (&myproc, &info.front(), info.size());
-  if (PMIX_SUCCESS != rc)
-    pmix_fatal_error (rc, "PMIx_tool_connect_to_server() failed");
-  debug_printf ("Connected tool to server\n");
-}  /* fork_exec_launcher */
-
-/**********************************************************************/
 /* Send the launch directives. */
 
 static void
@@ -1820,6 +1767,24 @@ int main (int argc, char **argv)
   register_default_event_handler();
 
   /*
+   * The namespace of the launcher process.
+   */
+  char launcher_nspace[PMIX_MAX_NSLEN+1];
+  /* initialize the nspace */
+  PMIX_LOAD_NSPACE(launcher_nspace, NULL);
+
+  /*
+   * Spawn the launcher process.
+   */
+  spawn_launcher (launcher_nspace, argc - argi, &argv[argi], proxy_run);
+
+  /*
+   * Connect to the server.
+   */
+  if (proxy_run)
+    connect_to_server();
+
+  /*
    * Register for the "launcher is ready to communicate" event.
    */
   release_t launcher_ready;
@@ -1830,29 +1795,6 @@ int main (int argc, char **argv)
    */
   release_t launcher_complete;
   register_launcher_complete (&launcher_complete);
-
-  /*
-   * The namespace of the launcher process.
-   */
-  char launcher_nspace[PMIX_MAX_NSLEN+1];
-
-  /*
-   * Spawn the launcher process.
-   */
-#if 0  /* 0 MARKER */
-  if (!proxy_run)
-    spawn_launcher (launcher_nspace, argc - argi, &argv[argi]);
-  else
-    fork_exec_launcher (launcher_nspace, argc - argi, &argv[argi]);
-#else
-  spawn_launcher (launcher_nspace, argc - argi, &argv[argi], proxy_run);
-#endif /* 0 MARKER */
-
-  /*
-   * Connect to the server.
-   */
-  if (proxy_run)
-    connect_to_server();
 
   /*
    * Wait here for the launcher to declare itself ready.
