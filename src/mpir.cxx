@@ -1733,6 +1733,9 @@ setup_pmix_prefix (const char *argv0_)
 				/* If argv[0] is null or empty, return */
   if (0 == argv0_ || '\0' == argv0_[0])
     return;
+				/* If "--pmix-prefix" was specified, return */
+  if (!pmix_prefix.empty())
+    return;
 				/* If the program name contains a '/', */
 				/* we don't need to search $PATH */
   scoped_ptr<char> program_path (0 != strchr (argv0_, '/') ? strdup (argv0_) : 0);
