@@ -42,6 +42,14 @@
 /*
  * Update log
  *
+ * May  9 2020 JVD: Added an error_ string argument to usage().
+ *		    Added "--pmix-prefix PATH" option that allows specifying
+ *		    the PATH where PMIx is installed.
+ *		    Added setup_pmix_prefix(), which if "--pmix-prefix PATH"
+ *		    option is not specified, will try to set the PMIx prefix
+ *		    PATH to where OpenPMIx is installed.
+ *		    Renamed main() to mpir(), and added a main() containing
+ *		    comments targeted at users.
  * Mar 26 2020 JVD: Fixed parens in while() EINTR loops.
  * Mar 14 2020 JVD: Delete session directory however we exit.
  *		    Added signal handlers.
@@ -688,6 +696,7 @@ static pmix::proc_t myproc;		/* Our (mpir's) PMIx process structure */
 static bool debug_output = false;	/* Generate debug output? */
 static std::string session_dirname;
 static std::string rendezvous_filename;
+static std::string pmix_prefix;
 
 /**********************************************************************/
 /* If we created a session directory, delete it when we exit. */
@@ -855,8 +864,12 @@ struct entry_exit_t
 /* Print a usage message and exit */
 
 static void
-usage()
+usage (const std::string error_ = std::string())
 {
+  if (!error_.empty())
+    {
+      fprintf (stderr, "USAGE ERROR: %s\n", error_.c_str());
+    }  /* if */
   fprintf (stderr,
 	   "PMIx to MPIR shim program.\n"
 	   "\n"
@@ -867,6 +880,7 @@ usage()
 	   "  -d | --debug                  Enable debug messages.\n"
 	   "  -p | --force-proxy-run        Force a proxy run.\n"
 	   "  -n | --force-non-proxy-run    Force a non-proxy run.\n"
+	   "  --pmix-prefix PATH            PATH where PMIx is installed.\n"
 	   "\n"
 	   "LAUNCHER:\n"
 	   "  Name of a PMIx launcher, such as \"prun\" or \"mpirun\".\n"
@@ -1358,6 +1372,13 @@ initialize_as_tool (bool proxy_run_)
       INFO_NEXT.load (PMIX_LAUNCHER, true);
    }  /* else */
 
+				/* If we have a path for where our PMIx is */
+				/* installed, pass it into PMIx_tool_init(). */
+  if (!pmix_prefix.empty())
+    {
+      INFO_NEXT.load (PMIX_PREFIX, pmix_prefix.c_str());
+    }  /* if */
+
 				 /* PMIx_tool_init() starts a thread running PMIx progress_engine() */
   pmix::status_t rc = PMIx_tool_init (&myproc, &info.front(), info.size());
   if (PMIX_SUCCESS != rc)
@@ -1366,9 +1387,6 @@ initialize_as_tool (bool proxy_run_)
 				/* If the launcher is going to start a PMIx server... */
   if (proxy_run_)
     {
-				/* Fill in our nspace/rank to use later */
-//      strcpy (myproc.nspace, nspace.c_str());
-//      myproc.rank = 0;
 				/* Setup the session paths */
       setup_session_paths();
     }	/* if */
@@ -1700,9 +1718,104 @@ setup_signal_handlers()
 }  /* setup_signal_handlers */
 
 /**********************************************************************/
-/* The main() program. */
+/* Setup the pmix_prefix variable, which allows our PMIx to find its
+   shared libraries and files.  The basic idea here is that by looking
+   at argv[0] and possibly searching $PATH, we can sniff around for
+   where OpenPMIx is installed relatve to where this program is
+   installed. It's not a 100% reliable, but works for at least
+   TotalView.  */
 
-int main (int argc, char **argv)
+static void
+setup_pmix_prefix (const char *argv0_)
+{
+  NOTE_ENTRY_EXIT();
+
+				/* If argv[0] is null or empty, return */
+  if (0 == argv0_ || '\0' == argv0_[0])
+    return;
+				/* If "--pmix-prefix" was specified, return */
+  if (!pmix_prefix.empty())
+    return;
+				/* If the program name contains a '/', */
+				/* we don't need to search $PATH */
+  scoped_ptr<char> program_path (0 != strchr (argv0_, '/') ? strdup (argv0_) : 0);
+  if (!program_path)
+    {
+				/* Search $PATH for the program */
+      const char *env_path = getenv ("PATH");
+      if (env_path)
+	{
+	  debug_printf ("Searching $PATH for '%s'\n", argv0_);
+	  scoped_ptr<char> path (strdup (env_path));
+	  for (const char *dir = strtok (path.get(), ":");
+	       0 != dir;
+	       dir = strtok (0, ":"))
+	    {
+				/* Candidate executable path */
+	      const std::string path_exe (form_string ("%s/%s", dir, argv0_));
+				/* Candidate executable resolved path */
+	      scoped_ptr<char> resolved_path_exe (realpath (path_exe.c_str(), 0));
+	      debug_printf ("  %s: %s\n",
+			    path_exe.c_str(),
+			    (resolved_path_exe
+			     ? form_string ("resolves to '%s'", resolved_path_exe.get()).c_str()
+			     : "is invalid"));
+	      if (resolved_path_exe &&
+		  0 == access (resolved_path_exe.get(), X_OK))
+		{
+		  program_path.reset (resolved_path_exe.release());
+		  break;
+		}  /* if */
+	    }  /* for */
+	}  /* if */
+    }  /* if */
+  else
+    {
+      program_path.reset (realpath (program_path.get(), 0));
+    }  /* else */
+
+  debug_printf ("Program '%s' resolves to '%s'\n",
+		argv0_,
+		program_path ? program_path.get() : "(null)");
+  if (program_path)
+    {
+      if (const char *last_slash = strrchr (program_path.get(), '/'))
+	{
+				/* Directory where executable is installed */
+	  const std::string bin_dir (program_path.get(), last_slash - program_path.get());
+	  /*
+	   * The OpenPMIx install directory can be in these places...
+	   */
+	  std::vector<std::string> places;
+				/* A TotalView export hierarchy. */
+	  places.push_back (bin_dir + "/../shlib/openpmix/obj");
+				/* A "make install" hierarchy where the */
+				/* MPIR-shim and OpenPMIx have a common */
+				/* --prefix configure value. */
+	  places.push_back (bin_dir + "/..");
+				/* If one of the places has a "lib/libpmix.so", */
+				/* then set pmix_prefix to that place. */
+	  for (std::vector<std::string>::iterator it = places.begin(), end = places.end();
+	       it != end;
+	       ++it)
+	    {
+	      std::string probe (*it + "/lib/libpmix.so");
+	      if (0 == access (probe.c_str(), F_OK))
+		{
+		  debug_printf ("Setting pmix_prefix to \"%s\"\n",
+				it->c_str());
+		  pmix_prefix = *it;
+		  break;
+		}  /* if */
+	    }  /* for */
+	}  /* if */
+    }  /* if */
+}  /* setup_pmix_prefix */
+
+/**********************************************************************/
+/* The main program. */
+
+int mpir (int argc, char **argv)
 {
   /*
    * Process any arguments we were given.
@@ -1717,7 +1830,6 @@ int main (int argc, char **argv)
     {
       if (argv[i][0] != '-')
 	break;
-      argi = i + 1;
       if (!strcmp (argv[i], "-h") || !strcmp (argv[i], "--help"))
 	usage();		/* Print the usage message and exit */
       else if (!strcmp (argv[i], "-d") || !strcmp (argv[i], "--debug"))
@@ -1726,9 +1838,16 @@ int main (int argc, char **argv)
 	proxy_run_pref = pr_force_true;
       else if (!strcmp (argv[i], "-n") || !strcmp (argv[i], "--force-no-proxy-run"))
 	proxy_run_pref = pr_force_false;
+      else if (!strcmp (argv[i], "--pmix-prefix"))
+	{
+	  if (i + 1 >= argc)
+	    usage (form_string ("PATH argument required for option \"%s\"", argv[i]));
+	  pmix_prefix = argv[++i];
+	}  /* else-if */
+      argi = i + 1;
     }  /* for */
   if (argi >= argc)		/* No program arguments? */
-    usage();			/* Print the usage message and exit. */
+    usage("PROG argument required");
 
   NOTE_ENTRY_EXIT();
 
@@ -1755,6 +1874,11 @@ int main (int argc, char **argv)
    * Setup signal handlers.
    */
   setup_signal_handlers();
+
+  /*
+   * Setup pmix_prefix before initializing PMIx.
+   */
+  setup_pmix_prefix (argv[0]);
 
   /*
    * Initialize ourselves as a PMIx tool.
@@ -1864,5 +1988,37 @@ int main (int argc, char **argv)
   debug_printf ("Exiting with status %d\n", exit_code);
   return exit_code;
 
-}  /* main */
+}  /* mpir */
 
+/***********************************************************************/
+/*
+ * A PMIx to MPIR shim program that extracts PMIx proctable information
+ * from a PMIx launcher process (prun, mpirun, etc.) and uses it to
+ * implement the MPIR specification.
+ *
+ * Used with OpenPMIx or Open MPI v5 and later in conjunction with
+ * legacy versions of tools that support MPIR only, for example:
+ *
+ *   totalview -args mpir mpirun -n 32 mpi-program
+ *
+ * TotalView treats "mpir" as an MPI starter program because it contains
+ * the MPIR symbols.  When "mpir" starts running, it uses PMIx to launch
+ * "mpirun", which in turn will launch the "mpi-program".  When "mpir"
+ * receives the program-launch PMIx event, it extracts the process table
+ * from PMIx, fills in the MPIR_proctable[], and calls MPIR_breakpoint.
+ * When "mpir" hits the MPIR_breakpoint, TotalView extracts the MPI
+ * process information from the MPIR_proctable[] and attaches to the
+ * processes in the job.
+ *
+ * See: https://github.com/openpmix/mpir-shim
+ */
+/***********************************************************************/
+
+int main (int argc, char **argv)
+{
+  /*
+   * If you are seeing this comment under a debugger,
+   * run this process to launch your MPI application.
+   */
+  return mpir (argc, argv);
+}  /* main */
