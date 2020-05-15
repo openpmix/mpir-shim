@@ -42,6 +42,8 @@
 /*
  * Update log
  *
+ * May 15 2020 JVD: Changed setup_pmix_prefix() to look for libpmix.dylib
+ *		    on Mac OS X.
  * May  9 2020 JVD: Added an error_ string argument to usage().
  *		    Added "--pmix-prefix PATH" option that allows specifying
  *		    the PATH where PMIx is installed.
@@ -1799,7 +1801,11 @@ setup_pmix_prefix (const char *argv0_)
 	       it != end;
 	       ++it)
 	    {
+#if defined(__APPLE__)
+	      std::string probe (*it + "/lib/libpmix.dylib");
+#else
 	      std::string probe (*it + "/lib/libpmix.so");
+#endif
 	      if (0 == access (probe.c_str(), F_OK))
 		{
 		  debug_printf ("Setting pmix_prefix to \"%s\"\n",
