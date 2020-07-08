@@ -1,4 +1,11 @@
+#
 # Copyright 2020     Intel, Inc. All rights reserved
+# Copyright (c) 2020      IBM Corporation.  All rights reserved.
+# $COPYRIGHT$
+#
+# Additional copyrights may follow
+#
+# $HEADER$
 #
 # See COPYING in top-level directory.
 
@@ -14,4 +21,4 @@ EXTRA_DIST = \
         README.md VERSION COPYING AUTHORS \
         config/mpirshim_get_version.sh
 
-SUBDIRS = src
+SUBDIRS = src test

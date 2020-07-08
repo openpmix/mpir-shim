@@ -22,7 +22,7 @@
 # Copyright (c) 2013-2020 Intel, Inc.  All rights reserved.
 # Copyright (c) 2014-2020 Research Organization for Information Science
 #                         and Technology (RIST).  All rights reserved.
-# Copyright (c) 2016-2017 IBM Corporation.  All rights reserved.
+# Copyright (c) 2016-2020 IBM Corporation.  All rights reserved.
 # Copyright (c) 2018      Amazon.com, Inc. or its affiliates.
 #                         All Rights reserved.
 # Copyright (c) 2018      FUJITSU LIMITED.  All rights reserved.
@@ -53,7 +53,7 @@ AC_INIT([mpir-shim],
         [https://github.com/openpmix/mpir-shim/issues], [mpirshim])
 AC_PREREQ(2.60)
 AC_CONFIG_AUX_DIR(config)
-AC_CONFIG_MACRO_DIR(config)
+AC_CONFIG_MACRO_DIR(./config)
 
 #
 # Start it up
@@ -262,7 +262,11 @@ MPIRSHIM_CHECK_PMIX
 # Part one of libtool magic.  Default to: enable shared, disable static.
 #
 
-# AM_ENABLE_SHARED
+AM_ENABLE_SHARED
+#AM_ENABLE_STATIC
+
+LT_INIT()
+LT_LANG([C])
 # AM_DISABLE_STATIC
 
 
@@ -437,10 +441,12 @@ fi
 MPIRSHIM_CHECK_OFFSETOF
 
 ##################################
-# C++ compiler characteristics
+# C/C++ compiler characteristics
 ##################################
 
+MPIRSHIM_SETUP_CC
 MPIRSHIM_SETUP_CXX
+MPIRSHIM_CHECK_VISIBILITY
 
 ##################################
 # Only after setting up both
@@ -493,6 +499,10 @@ AC_SUBST(CXXFLAGS)
 AC_CONFIG_FILES([
     Makefile
     src/Makefile
+    test/Makefile
 ])
 
+mpirshim_show_title "Configuration complete"
+
 AC_OUTPUT
+
