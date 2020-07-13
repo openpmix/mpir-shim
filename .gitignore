@@ -62,6 +62,7 @@ src/include/mpirshim_config.h
 src/include/stamp-h1
 src/include/version.h
 src/mpir
+src/mpirc
 
 test/mpirshim_test
 test/.deps/

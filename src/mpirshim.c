@@ -1808,19 +1808,30 @@ int query_launcher_namespace(void)
 {
     char launcher_namespace[PMIX_MAX_NSLEN + 1];
     pmix_value_t *val = NULL;
+    int rc;
 
     MPIR_SHIM_DEBUG_ENTER("");
 
     // Access Launcher information
     // https://github.com/openpmix/openpmix/issues/1801#issuecomment-648365247
-    PMIx_Get(&tool_proc, PMIX_SERVER_NSPACE, NULL, 0, &val);
-    if( NULL != val && val->type == PMIX_STRING ) {
+    rc = PMIx_Get(&tool_proc, PMIX_SERVER_NSPACE, NULL, 0, &val);
+    if( PMIX_SUCCESS == rc && NULL != val && val->type == PMIX_STRING ) {
         PMIX_LOAD_NSPACE(launcher_namespace, val->data.string);
 
-        PMIx_Get(&tool_proc, PMIX_SERVER_RANK, NULL, 0, &val);
-        if( NULL != val && val->type == PMIX_PROC_RANK ) {
+        rc = PMIx_Get(&tool_proc, PMIX_SERVER_RANK, NULL, 0, &val);
+        if( PMIX_SUCCESS == rc && NULL != val && val->type == PMIX_PROC_RANK ) {
             PMIX_PROC_LOAD(&launcher_proc, launcher_namespace, val->data.rank);
         }
+        else {
+            pmix_fatal_error(rc, "Failed in PMIx_Get(PMIX_SERVER_RANK)\n");
+        }
+    }
+    else {
+        pmix_fatal_error(rc, "Failed in PMIx_Get(PMIX_SERVER_NSPACE)\n");
+    }
+
+    if (0 == strlen(launcher_proc.nspace)) {
+        pmix_fatal_error(rc, "Failed to access the launcher's namespace\n");
     }
 
     MPIR_SHIM_DEBUG_EXIT("Connected to launcher nspace '%s' rank %d",

@@ -183,6 +183,29 @@ static void mpir_version_hook(FILE *stream, struct argp_state *state)
  * @param  argv: Null terminated array of module arguments
  * @return 0 if successful, 1 if failed
  */
+/***********************************************************************/
+/*
+ * A PMIx to MPIR shim program that extracts PMIx proctable information
+ * from a PMIx launcher process (prun, mpirun, etc.) and uses it to
+ * implement the MPIR specification.
+ *
+ * Used with PRRTE v2/OpenPMIx v4 or Open MPI v5 and later in conjunction with
+ * legacy versions of tools that support MPIR only, for example:
+ *
+ *   totalview -args mpirc mpirun -n 32 mpi-program
+ *
+ * TotalView treats "mpirc" as an MPI starter program because it contains
+ * the MPIR symbols.  When "mpirc" starts running, it uses PMIx to launch
+ * "mpirun", which in turn will launch the "mpi-program".  When "mpirc"
+ * receives the program-launch PMIx event, it extracts the process table
+ * from PMIx, fills in the MPIR_proctable[], and calls MPIR_breakpoint.
+ * When "mpirc" hits the MPIR_breakpoint, TotalView extracts the MPI
+ * process information from the MPIR_proctable[] and attaches to the
+ * processes in the job.
+ *
+ * See: https://github.com/openpmix/mpir-shim
+ */
+/***********************************************************************/
 int main(int argc, char *argv[])
 {
     int rc;

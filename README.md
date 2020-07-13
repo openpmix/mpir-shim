@@ -18,7 +18,9 @@ make
 make install
 ```
 
-This will create a binary `mpir` that can be used to wrap the native launcher. Additionally, a library is created (`libmpirshim` - both static and shared versions) that can be linked into a launcher library that wants to hide the use the shim from the user.
+This will create two binaries `mpir` and `mpirc` either of which can be used to wrap the native launcher. The difference is that the former (`mpir`) is written in C++ and the latter (`mpirc`) is written in C. They should be functionally the same.
+
+Additionally, a library is created (`libmpirshim` - both static and shared versions) that can be linked into a launcher library that wants to hide the use the shim from the user.
 
 
 ## Running the MPIR Shim
@@ -36,6 +38,12 @@ For example, `prterun` or `mpirun` used to launch a single job. Those launchers 
 
 ```
 mpir mpirun -np 2 ./a.out
+```
+
+Example of MPIR Shim being used with a legacy version of TotalView that does not support PMIx:
+
+```
+totalview -args mpir mpirun -n 32 mpi-program
 ```
 
 ### Running in non-proxy mode
@@ -60,10 +68,12 @@ mpirun -np 2 ./a.out
 
 Later, attach to the running job by using the PID of `mpirun` (using `1234` for illustration below):
 ```
-mpir -c 1234
+mpirc -c 1234
+# Or directly with a debugger
+gdb mpirc -c 1234
 ```
 
-The MPIR Shim will extract the `MPIR_proctable` and idle until the application terminates. You can then use a parallel debugger to connect to the `mpir` process to read the process table and attach to the remote processes.
+The MPIR Shim will extract the `MPIR_proctable` and idle until the application terminates. You can then use a parallel debugger to connect to the `mpirc` process to read the process table and attach to the remote processes.
 
 Note that Attach Mode assumes a Proxy Mode launch at this time. It may not work with the Non-Proxy mode.
 
