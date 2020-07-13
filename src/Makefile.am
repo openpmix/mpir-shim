@@ -10,19 +10,34 @@
 
 AM_CPPFLAGS = -I$(top_builddir)/src/include
 
-bin_PROGRAMS = mpir
+bin_PROGRAMS = mpir mpirc
 
 include_HEADERS = include/mpirshim.h
 
+#
+# libmpirshim[.so|.a]
+#
 lib_LTLIBRARIES = libmpirshim.la
 libmpirshim_la_SOURCES = mpirshim.c include/mpirshim.h
 libmpirshim_la_LDFLAGS = $(pmix_LDFLAGS) -version-info $(libmpirshim_so_version)
 
-mpir_SOURCES = mpir.c include/mpirshim.h
-mpir_CFLAGS = $(pmix_CPPFLAGS)
+#
+# C++ version
+#
+mpir_SOURCES = mpir.cxx
+mpir_CFLAGS = $(pmix_CFLAGS)
 mpir_CPPFLAGS = $(pmix_CPPFLAGS)
-mpir_LDFLAGS = $(pmix_LDFLAGS) -static
-mpir_LDADD =  $(pmix_LIBS) $(top_builddir)/src/libmpirshim.la
+mpir_LDFLAGS = $(pmix_LDFLAGS)
+mpir_LDADD =  $(pmix_LIBS)
+
+#
+# C version
+#
+mpirc_SOURCES = mpirc.c include/mpirshim.h
+mpirc_CFLAGS = $(pmix_CFLAGS)
+mpirc_CPPFLAGS = $(pmix_CPPFLAGS)
+mpirc_LDFLAGS = $(pmix_LDFLAGS) -static
+mpirc_LDADD =  $(pmix_LIBS) $(top_builddir)/src/libmpirshim.la
 
 #
 # Testing library

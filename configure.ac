@@ -264,10 +264,7 @@ MPIRSHIM_CHECK_PMIX
 
 AM_ENABLE_SHARED
 #AM_ENABLE_STATIC
-
-LT_INIT()
-LT_LANG([C])
-# AM_DISABLE_STATIC
+#AM_DISABLE_STATIC
 
 
 ############################################################################
@@ -444,9 +441,11 @@ MPIRSHIM_CHECK_OFFSETOF
 # C/C++ compiler characteristics
 ##################################
 
-MPIRSHIM_SETUP_CC
 MPIRSHIM_SETUP_CXX
 MPIRSHIM_CHECK_VISIBILITY
+
+LT_INIT()
+LT_LANG([C])
 
 ##################################
 # Only after setting up both
